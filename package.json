@@ -1,0 +1,18 @@
+{
+  "name": "edge-openlist",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenList 风格的网盘聚合服务，运行于 Cloudflare Worker（Hono + D1 + KV + R2 + Vue3）",
+  "workspaces": [
+    "worker",
+    "web"
+  ],
+  "scripts": {
+    "dev:worker": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "npm --workspace worker run typecheck",
+    "build:web": "npm --workspace web run build",
+    "dev:web": "npm --workspace web run dev",
+    "test": "tsx test/drivers.test.ts"
+  }
+}

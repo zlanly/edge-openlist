@@ -1,0 +1,42 @@
+name = "edge-openlist"
+main = "worker/src/index.ts"
+compatibility_date = "2025-07-01"
+compatibility_flags = ["nodejs_compat"]
+
+# 前端静态资源（Vue3 构建产物）由同一 Worker 托管
+[assets]
+directory = "./web/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+# 元数据 / 用户 / 挂载配置 / 搜索索引
+[[d1_databases]]
+binding = "DB"
+database_name = "edge-openlist"
+database_id = "REPLACE_WITH_YOUR_D1_ID"
+migrations_dir = "migrations"
+
+# 会话、驱动 token、目录缓存（带 TTL）
+[[kv_namespaces]]
+binding = "KV"
+id = "REPLACE_WITH_YOUR_KV_ID"
+
+# 本地盘 / 上传落盘
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "edge-openlist"
+
+# 后台爬取建索引（搜索用）
+[triggers]
+crons = ["13 3 * * *"]
+
+[vars]
+JWT_SECRET = "change-me-in-dashboard"
+APP_TITLE = "EdgeOpenList"
+
+# 本地开发：wrangler dev 会自动用本地 D1/KV/R2（miniflare）
+# 部署前请执行：
+#   wrangler d1 create edge-openlist
+#   wrangler kv namespace create edge-openlist-kv
+#   wrangler r2 bucket create edge-openlist
+# 并把上面的 database_id / id 替换好，再到 dashboard 设置 JWT_SECRET
