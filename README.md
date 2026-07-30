@@ -75,7 +75,14 @@ npm run build:web           # 构建前端到 web/dist
 
 ## 部署
 
-> 一键部署（推荐）：点击顶部 **Deploy to Cloudflare Workers** 按钮，授权后自动克隆本仓库并按 `wrangler.toml` 部署；部署完到 Cloudflare 控制台把 `wrangler.toml` 里的 `database_id` / `kv id` / `bucket_name` 与 `JWT_SECRET` 填好即可。
+> **一键部署（推荐）**：点击顶部 **Deploy to Cloudflare Workers** 按钮 → 授权 → 确认资源名。Cloudflare 会自动：克隆仓库 → **构建前端（vite → `web/dist`）** → **创建并绑定 D1 / KV / R2（自动回填 ID）** → 跑 D1 迁移建表 → 部署。整个过程无需手动填 ID。
+>
+> 部署完成后还需两步才能用：
+> 1. 到 Cloudflare 控制台 **Workers → 设置 → 变量** 把 `JWT_SECRET`、`BOOTSTRAP_SECRET` 改成 `openssl rand -hex 32` 生成的随机值（默认值是占位符，存在安全风险）。
+> 2. 创建管理员（仅首次，无用户时）：
+>    ```bash
+>    curl "https://你的域名/api/auth/bootstrap?secret=你的BOOTSTRAP_SECRET&username=admin&password=你的密码"
+>    ```
 
 手动部署：
 
@@ -88,13 +95,9 @@ wrangler r2 bucket create edge-openlist
 # 2. 把 ids 填进 wrangler.toml 的 database_id / id / bucket_name
 # 3. dashboard 设置变量 JWT_SECRET、BOOTSTRAP_SECRET（或写进 .dev.vars）
 npm run build:web          # 先构建前端
-wrangler deploy            # 部署
+npm run deploy             # 跑 D1 迁移 + 部署
 
-# 4. 初始化数据库
-wrangler d1 execute edge-openlist --local --file=./migrations/0001_init.sql
-wrangler d1 execute edge-openlist --remote --file=./migrations/0001_init.sql
-
-# 5. 创建管理员（仅首次，无用户时）
+# 4. 创建管理员（仅首次，无用户时）
 curl "https://你的域名/api/auth/bootstrap?secret=你的BOOTSTRAP_SECRET&username=admin&password=你的密码"
 ```
 

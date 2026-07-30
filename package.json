@@ -9,10 +9,22 @@
   ],
   "scripts": {
     "dev:worker": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "typecheck": "npm --workspace worker run typecheck",
+    "build": "npm run build:web",
     "build:web": "npm --workspace web run build",
+    "db:migrate": "wrangler d1 migrations apply DB --remote",
+    "deploy": "npm run db:migrate && wrangler deploy",
+    "typecheck": "npm --workspace worker run typecheck",
     "dev:web": "npm --workspace web run dev",
     "test": "tsx test/drivers.test.ts"
+  },
+  "cloudflare": {
+    "bindings": {
+      "JWT_SECRET": {
+        "description": "JWT 签名密钥。部署后请到 Cloudflare 控制台 Workers 变量页改成 `openssl rand -hex 32` 生成的随机值。"
+      },
+      "BOOTSTRAP_SECRET": {
+        "description": "首次部署创建管理员的引导密钥。部署后用 `?secret=此处值` 调 /api/auth/bootstrap 建管理员，建完请立即改掉。"
+      }
+    }
   }
 }
