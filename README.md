@@ -1,6 +1,6 @@
 # 🌿 EdgeOpenList
 
-把 [OpenList](https://doc.oplist.org/) 的核心能力搬上 **Cloudflare Worker**：多存储挂载、目录列表 / 预览 / 下载、文件管理、WebDAV、搜索、分享。后端 Hono + D1 + KV + R2，前端 Vue3（温暖清新风），单仓库单部署。
+把 [OpenList](https://doc.oplist.org/) 的核心能力搬上 **Cloudflare Worker**：多存储挂载、目录列表 / 预览 / 下载、文件管理、WebDAV、搜索、分享。后端 Hono + **KV（默认存储）**，D1 / R2 可选增强；前端 Vue3（温暖清新风），单仓库单部署。
 
 > 免费档起步。受 CF 约束，**大文件上传走预签名/直传、下载永远流式、列表进 KV/D1 缓存**，绝不缓冲整文件。
 
@@ -13,11 +13,11 @@ Browser (Vue3 SPA)
       │  REST / WebDAV
       ▼
 Cloudflare Worker (Hono)
-  ├─ Auth (JWT, PBKDF2)        ── D1(users) + KV(session)
+  ├─ Auth (JWT, PBKDF2)        ── KV(users) + KV(session)
   ├─ FS 路由 (/api/fs/*)       ── 驱动抽象
   ├─ WebDAV (/dav/:mount/*)    ── 驱动抽象
-  ├─ 搜索 (/api/fs/search)     ── D1 file_cache 索引
-  ├─ 分享 (/s/:id)             ── D1 shares
+  ├─ 搜索 (/api/fs/search)     ── KV file_cache 索引
+  ├─ 分享 (/s/:id)             ── KV shares
   └─ OAuth (/api/oauth/:p/*)   ── OneDrive / Google Drive 授权回调（令牌存 KV）
         │
    Storage Drivers（统一接口）
@@ -26,10 +26,10 @@ Cloudflare Worker (Hono)
 
 ## 已实现
 
-- ✅ 多存储挂载（D1 配置，强一致）
+- ✅ 多存储挂载（默认 KV 配置；可选 D1 强一致，代码自动切换）
 - ✅ R2 / S3 兼容驱动：列表、Range 预览（视频/图片）、流式下载、文件管理（增删改/移动）、**预签名直传**
 - ✅ WebDAV（PROPFIND/GET/PUT/DELETE/MKCOL/MOVE + OPTIONS/LOCK 占位），兼容 rclone / Infuse
-- ✅ 搜索（列表写入 D1 索引 + 每日 Cron 后台爬取建索引）
+- ✅ 搜索（列表写入 KV 索引 + 每日 Cron 后台爬取建索引）
 - ✅ 公开分享（密码 + 过期）
 - ✅ 鉴权（JWT + PBKDF2，管理员挂载管理）
 - ✅ 自研 Vue3 前端（温暖清新风）
@@ -75,10 +75,12 @@ npm run build:web           # 构建前端到 web/dist
 
 ## 部署
 
-> **一键部署（推荐）**：点击顶部 **Deploy to Cloudflare Workers** 按钮 → 授权 → 确认资源名。Cloudflare 会自动：克隆仓库 → **构建前端（vite → `web/dist`，由 `wrangler.toml` 的 `[build]` 保证，对默认 `npx wrangler deploy` 也生效）** → **创建并绑定 D1 / KV / R2（自动回填 ID）** → 部署。D1 表结构在 Worker **首次请求时自动创建**（`db/init.ts` 的 `CREATE TABLE IF NOT EXISTS`，与 `wrangler d1 migrations apply` 幂等），无需手动跑迁移。
+> **存储说明（重要）**：应用数据层（用户 / 挂载配置 / 分享 / 文件索引）**默认使用 KV**，因此只需一个 KV 命名空间即可完整运行，无需 D1。若账户具备 D1 权限，取消 `wrangler.toml` 里 `[[d1_databases]]` 注释并填好 `database_id`，代码会自动切换为 D1 存储（强一致 + SQL 搜索）。R2 仅在使用 `r2` 驱动做上传落盘时需要。三种模式代码均已支持，部署脚本统一为 `wrangler deploy`。
+
+> **一键部署（推荐）**：点击顶部 **Deploy to Cloudflare Workers** 按钮 → 授权 → 确认资源名。Cloudflare 会自动：克隆仓库 → **构建前端（vite → `web/dist`，由 `wrangler.toml` 的 `[build]` 保证，对默认 `npx wrangler deploy` 也生效）** → **创建并绑定 KV（自动回填 ID）** → 部署。D1 / R2 默认不在 `wrangler.toml` 中，故按钮不会强制要求这两项——没有 D1 权限或未启用 R2 也能一键跑起来。
 >
 > 部署完成后还需两步才能用：
-> 1. 到 Cloudflare 控制台 **Workers → 设置 → 变量** 把 `JWT_SECRET`、`BOOTSTRAP_SECRET` 改成 `openssl rand -hex 32` 生成的随机值（默认值是占位符，存在安全风险）。
+> 1. 到 Cloudflare 控制台 **Workers → 设置 → 变量** 把 `JWT_SECRET`、`BOOTSTRAP_SECRET` 改成 `openssl rand -hex 32` 生成的随机值（默认值是占位符，存在安全风险）；或命令行 `npx wrangler secret put JWT_SECRET` / `npx wrangler secret put BOOTSTRAP_SECRET`。
 > 2. 创建管理员（仅首次，无用户时）：
 >    ```bash
 >    curl "https://你的域名/api/auth/bootstrap?secret=你的BOOTSTRAP_SECRET&username=admin&password=你的密码"
@@ -87,17 +89,20 @@ npm run build:web           # 构建前端到 web/dist
 手动部署：
 
 ```bash
-# 1. 创建绑定资源
-wrangler d1 create edge-openlist
+# 1. 创建 KV（必需）；D1 / R2 按需创建并在 wrangler.toml 取消对应注释
 wrangler kv namespace create edge-openlist-kv
-wrangler r2 bucket create edge-openlist
+# wrangler d1 create edge-openlist            # 可选：强一致存储
+# wrangler r2 bucket create edge-openlist    # 可选：上传落盘（需账户已启用 R2）
 
-# 2. 把 ids 填进 wrangler.toml 的 database_id / id / bucket_name
-# 3. dashboard 设置变量 JWT_SECRET、BOOTSTRAP_SECRET（或写进 .dev.vars）
+# 2. 把 KV id 填进 wrangler.toml 的 [[kv_namespaces]] id（D1/R2 同理）
+# 3. dashboard / wrangler secret put 设置变量 JWT_SECRET、BOOTSTRAP_SECRET（或写进 .dev.vars）
 npm run build:web          # 先构建前端
-npm run deploy             # 跑 D1 迁移 + 部署
+npm run deploy             # 部署（含 [build] 自动构建前端）
 
-# 4. 创建管理员（仅首次，无用户时）
+# 4. 若使用 D1，首次部署前执行迁移（KV 模式无需）
+npm run db:migrate
+
+# 5. 创建管理员（仅首次，无用户时）
 curl "https://你的域名/api/auth/bootstrap?secret=你的BOOTSTRAP_SECRET&username=admin&password=你的密码"
 ```
 
@@ -122,7 +127,7 @@ curl "https://你的域名/api/auth/bootstrap?secret=你的BOOTSTRAP_SECRET&user
 
 - CPU 10ms/请求：重目录解析靠缓存与分页；大计算需升付费档。
 - 请求体 100MB：R2 走预签名直传；WebDAV 经 Worker 流式代理（≤100MB）。
-- KV 最终一致：挂载配置存 D1，不依赖 KV 读后写。
+- KV 最终一致：默认挂载配置存 KV（D1 可选强一致），注意 KV 读后写延迟。
 - 内存 128MB：所有文件一律流式，不缓冲整文件。
 
 ## 目录
@@ -132,7 +137,8 @@ worker/src/
   index.ts            Hono 入口 + 路由装配 + Cron 爬取
   types.ts            环境/接口类型
   util/auth.ts        JWT + PBKDF2
-  db/schema.ts        D1 封装
+  db/store.ts         存储抽象（KV / D1 双实现，自动选择）
+  db/schema.ts        D1 封装（D1Store 委托对象）
   middleware/auth.ts  鉴权中间件
   drivers/            驱动抽象与各后端实现
   routes/             auth / mounts / fs / dav / share

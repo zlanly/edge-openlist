@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types";
 import { adminMiddleware } from "../middleware/auth";
-import { getMount, updateMount } from "../db/schema";
+import { getStore } from "../db/store";
 import { saveTokens } from "../util/tokenstore";
 import { buildAuthUrl, oauthExchange } from "../util/oauth";
 import { OAUTH_PROVIDERS, OAUTH_PROVIDER_IDS, isOAuthDriver } from "../util/oauth-providers";
@@ -18,7 +18,8 @@ oauth.get("/:provider/start", adminMiddleware, async (c) => {
   if (!def) return c.json({ error: "未知 provider" }, 400);
   const mountId = c.req.query("mount");
   if (!mountId) return c.json({ error: "缺少 mount 参数" }, 400);
-  const mount = await getMount(c.env.DB, Number(mountId));
+  const store = getStore(c.env);
+  const mount = await store.getMount(Number(mountId));
   if (!mount) return c.json({ error: "挂载不存在" }, 404);
   const cfg = JSON.parse(mount.config_json || "{}");
   const redirectUri = cfg.redirectUri || `${new URL(c.req.url).origin}/api/oauth/${provider}/callback`;
@@ -42,7 +43,8 @@ oauth.get("/:provider/callback", async (c) => {
   const code = c.req.query("code");
   const state = c.req.query("state");
   if (!code || !state) return c.text("缺少 code 或 state", 400);
-  const mount = await getMount(c.env.DB, Number(state));
+  const store = getStore(c.env);
+  const mount = await store.getMount(Number(state));
   if (!mount) return c.text("挂载不存在", 404);
   const cfg = JSON.parse(mount.config_json || "{}");
   const redirectUri = cfg.redirectUri || `${new URL(c.req.url).origin}/api/oauth/${provider}/callback`;
@@ -50,7 +52,7 @@ oauth.get("/:provider/callback", async (c) => {
     const t = await oauthExchange(def.token, cfg.clientId || "", cfg.clientSecret || "", redirectUri, code, def.extraToken || {});
     await saveTokens(c.env.KV, Number(state), t);
     const merged = { ...cfg, refreshToken: t.refresh_token || cfg.refreshToken };
-    await updateMount(c.env.DB, Number(state), { config_json: JSON.stringify(merged) });
+    await store.updateMount(Number(state), { config_json: JSON.stringify(merged) });
   } catch (e: any) {
     return c.text("授权失败：" + (e?.message || e), 500);
   }

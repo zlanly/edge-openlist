@@ -2,6 +2,7 @@ import type { Driver, DriverConfig, Env, FileItem, MountRow, UploadSession } fro
 import { basename, joinPath, normalizePath } from "./base";
 import { buildDriver } from "./factory";
 import { CloudBase } from "./cloud-base";
+import { getStore } from "../db/store";
 
 // 元驱动：别名挂载。把本挂载映射到另一个已存在挂载的某路径。
 // init 从 cfg 读取目标挂载：优先 mount_id（+ 可选 path 子路径），否则读 remote（OpenList 形式 "/挂载名/子路径"）。
@@ -31,7 +32,7 @@ export class AliasDriver extends CloudBase {
     if (this.target) return this.target;
     const mid = this.cfg.mount_id;
     if (mid != null && mid !== "") {
-      const row = await this.env.DB.prepare("SELECT * FROM mounts WHERE id = ?").bind(Number(mid)).first<MountRow>();
+      const row = await getStore(this.env).getMount(Number(mid));
       if (!row) throw new Error("alias: 未找到目标挂载 id=" + mid);
       const d = await buildDriver(this.env, row);
       this.target = { driver: d, sub: normalizePath(this.cfgStr("path") || "/") };
@@ -40,7 +41,7 @@ export class AliasDriver extends CloudBase {
     const remote = this.cfgStr("remote").trim();
     if (remote) {
       const [name, rest] = splitMount(remote);
-      const row = await this.env.DB.prepare("SELECT * FROM mounts WHERE name = ?").bind(name).first<MountRow>();
+      const row = await getStore(this.env).getMountByName(name);
       if (!row) throw new Error("alias: 未找到目标挂载 name=" + name);
       const d = await buildDriver(this.env, row);
       this.target = { driver: d, sub: rest };

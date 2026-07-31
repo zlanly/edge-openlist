@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types";
 import { adminMiddleware } from "../middleware/auth";
-import { createMount, deleteMount, listMounts, updateMount, getMount } from "../db/schema";
+import { getStore } from "../db/store";
 import { listDriverNames } from "../drivers";
 import { listDriverSchemas } from "../drivers/schemas";
 import { isOAuthDriver } from "../util/oauth-providers";
@@ -11,8 +11,8 @@ mounts.use("*", adminMiddleware);
 
 // 列出所有挂载（含禁用）
 mounts.get("/", async (c) => {
-  const { results } = await c.env.DB.prepare("SELECT * FROM mounts ORDER BY `order` ASC, id ASC").all();
-  return c.json({ items: results });
+  const items = await getStore(c.env).listAllMounts();
+  return c.json({ items });
 });
 
 // 可用驱动列表 + 完整配置 schema（供前端动态渲染表单）
@@ -25,7 +25,7 @@ mounts.get("/drivers", (c) => {
 mounts.post("/", async (c) => {
   const body = await c.req.json<{ name: string; driver: string; config: Record<string, unknown>; root?: string; order?: number }>();
   if (!body.name || !body.driver) return c.json({ error: "缺少 name / driver" }, 400);
-  const id = await createMount(c.env.DB, {
+  const id = await getStore(c.env).createMount({
     name: body.name,
     driver: body.driver,
     config_json: JSON.stringify(body.config ?? {}),
@@ -46,19 +46,19 @@ mounts.put("/:id", async (c) => {
   if (body.root !== undefined) patch.root = body.root;
   if (body.order !== undefined) patch.order = body.order;
   if (body.enabled !== undefined) patch.enabled = body.enabled;
-  await updateMount(c.env.DB, id, patch);
+  await getStore(c.env).updateMount(id, patch);
   return c.json({ ok: true });
 });
 
 // 删除
 mounts.delete("/:id", async (c) => {
-  await deleteMount(c.env.DB, Number(c.req.param("id")));
+  await getStore(c.env).deleteMount(Number(c.req.param("id")));
   return c.json({ ok: true });
 });
 
 // 取单个（调试用）
 mounts.get("/:id", async (c) => {
-  const m = await getMount(c.env.DB, Number(c.req.param("id")));
+  const m = await getStore(c.env).getMount(Number(c.req.param("id")));
   return c.json({ mount: m });
 });
 

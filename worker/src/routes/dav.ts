@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv, FileItem, MountRow } from "../types";
 import { authMiddleware } from "../middleware/auth";
-import { getMount } from "../db/schema";
+import { getStore } from "../db/store";
 import { buildDriver } from "../drivers/factory";
 import { normalizePath, sortItems, basename } from "../drivers";
 
@@ -35,7 +35,7 @@ dav.all("*", async (c) => {
   const parts = full.split("/").filter(Boolean);
   if (parts.length === 0) return c.text("需要挂载ID，例�? /dav/1/路径", 400);
   const mountId = Number(parts[0]);
-  const mount: MountRow | null = await getMount(c.env.DB, mountId);
+  const mount: MountRow | null = await getStore(c.env).getMount(mountId);
   if (!mount || !mount.enabled) return c.text("挂载不存�?", 404);
   const relPath = "/" + parts.slice(1).map(decodeURIComponent).join("/");
   const path = normalizePath(relPath);

@@ -13,6 +13,18 @@ export async function getMount(db: D1Database, id: number): Promise<MountRow | n
   return (await db.prepare("SELECT * FROM mounts WHERE id = ?").bind(id).first<MountRow>()) ?? null;
 }
 
+export async function getMountByName(db: D1Database, name: string): Promise<MountRow | null> {
+  return (await db.prepare("SELECT * FROM mounts WHERE name = ?").bind(name).first<MountRow>()) ?? null;
+}
+
+// 管理后台列出所有挂载（含禁用项）
+export async function listAllMounts(db: D1Database): Promise<MountRow[]> {
+  const { results } = await db
+    .prepare("SELECT * FROM mounts ORDER BY `order` ASC, id ASC")
+    .all<MountRow>();
+  return results ?? [];
+}
+
 export async function createMount(
   db: D1Database,
   data: { name: string; driver: string; config_json: string; root: string; order: number }

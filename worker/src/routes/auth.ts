@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types";
-import { createUser, countUsers, getUserByName } from "../db/schema";
+import { getStore } from "../db/store";
 import { createToken, hashPassword, verifyPassword } from "../util/auth";
 
 const auth = new Hono<AppEnv>();
@@ -9,7 +9,7 @@ const auth = new Hono<AppEnv>();
 auth.post("/login", async (c) => {
   const { username, password } = await c.req.json<{ username: string; password: string }>();
   if (!username || !password) return c.json({ error: "缺少用户名或密码" }, 400);
-  const user = await getUserByName(c.env.DB, username);
+  const user = await getStore(c.env).getUserByName(username);
   if (!user || !(await verifyPassword(password, user.password_hash))) {
     return c.json({ error: "用户名或密码错误" }, 401);
   }
@@ -25,10 +25,10 @@ auth.get("/bootstrap", async (c) => {
   const secret = c.req.query("secret");
   const want = c.env.BOOTSTRAP_SECRET;
   if (!want || secret !== want) return c.json({ error: "禁止" }, 403);
-  if (await countUsers(c.env.DB) > 0) return c.json({ error: "已存在用户，禁止重复引导" }, 409);
+  if (await getStore(c.env).countUsers() > 0) return c.json({ error: "已存在用户，禁止重复引导" }, 409);
   const username = c.req.query("username") || "admin";
   const password = c.req.query("password") || "edgeopenlist";
-  await createUser(c.env.DB, username, await hashPassword(password), "admin");
+  await getStore(c.env).createUser(username, await hashPassword(password), "admin");
   return c.json({ ok: true, username, password });
 });
 

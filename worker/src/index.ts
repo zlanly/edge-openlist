@@ -8,7 +8,7 @@ import share from "./routes/share";
 import oauth from "./routes/oauth";
 import { buildDriver } from "./drivers/factory";
 import { normalizePath, sortItems } from "./drivers";
-import { upsertFileCache } from "./db/schema";
+import { getStore } from "./db/store";
 import { initDb } from "./db/init";
 
 const app = new Hono<AppEnv>();
@@ -42,9 +42,10 @@ app.get("*", async (c) => {
 
 // ---------- 后台爬取建搜索索引（Cron: 每日 03:13） ----------
 async function crawl(env: Env): Promise<void> {
-  const { results } = (await env.DB.prepare("SELECT * FROM mounts WHERE enabled = 1").all()) as any;
+  const store = getStore(env);
+  const results = await store.listMounts();
   const MAX_ENTRIES = 4000; // 免费档 CPU 预算保护
-  for (const m of results as MountRow[]) {
+  for (const m of results) {
     const driver = await buildDriver(env, m);
     const queue: string[] = [normalizePath(m.root || "/")];
     let count = 0;
@@ -52,7 +53,7 @@ async function crawl(env: Env): Promise<void> {
       const dir = queue.shift() as string;
       try {
         const items = sortItems(await driver.list(dir));
-        await upsertFileCache(env.DB, m.id, items, dir);
+        await store.upsertFileCache(m.id, items, dir);
         count += items.length;
         for (const it of items) if (it.is_dir) queue.push(it.path);
       } catch {

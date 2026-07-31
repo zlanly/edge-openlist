@@ -14,35 +14,41 @@ not_found_handling = "single-page-application"
 [build]
 command = "npm run build:web"
 
-# 元数据 / 用户 / 挂载配置 / 搜索索引
-[[d1_databases]]
-binding = "DB"
-database_name = "edge-openlist"
-database_id = "00000000-0000-0000-0000-000000000000" # Deploy 按钮会自动创建 D1 并回填真实 ID
-migrations_dir = "migrations"
+# ─────────────────────────────────────────────────────────────
+# 存储说明（重要）
+# 本应用数据层（挂载配置 / 用户 / 分享 / 文件索引）默认使用 KV，
+# 因此一个 KV 命名空间即可完整运行，无需 D1。
+# 若你的账户具备 D1 权限，可在下方取消注释 [[d1_databases]] 绑定，
+# 代码会自动切换为 D1 存储（强一致 + SQL 搜索）。两种模式代码均已支持。
+# R2 仅在使用「r2」驱动做上传落盘时需要；未启用 R2 的账户不影响其它功能。
+# ─────────────────────────────────────────────────────────────
 
-# 会话、驱动 token、目录缓存（带 TTL）
+# 会话、驱动 token、目录缓存、挂载/用户/分享等全部结构化数据（带 TTL）
 [[kv_namespaces]]
 binding = "KV"
-id = "00000000000000000000000000000000" # Deploy 按钮会自动创建 KV 并回填真实 ID
+id = "011c31d4d1114495bd89138839b254f2"
 
-# 本地盘 / 上传落盘
-[[r2_buckets]]
-binding = "R2"
-bucket_name = "edge-openlist"
+# 强一致关系存储（可选，需账户具备 D1 权限；启用后自动切换为 D1 模式）
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "edge-openlist"
+# database_id = "00000000-0000-0000-0000-000000000000"
+# migrations_dir = "migrations"
+
+# 本地盘 / 上传落盘（可选；需账户已启用 R2）
+# [[r2_buckets]]
+# binding = "R2"
+# bucket_name = "edge-openlist"
 
 # 后台爬取建索引（搜索用）
 [triggers]
 crons = ["13 3 * * *"]
 
 [vars]
-JWT_SECRET = "change-me-in-dashboard"
-BOOTSTRAP_SECRET = "change-me-in-dashboard"
 APP_TITLE = "EdgeOpenList"
+# JWT_SECRET 与 BOOTSTRAP_SECRET 建议部署后用以下命令设置随机值（secrets，不可读取）：
+#   npx wrangler secret put JWT_SECRET
+#   npx wrangler secret put BOOTSTRAP_SECRET
+# 下方仅为占位，正式部署务必覆盖。
 
-# 本地开发：wrangler dev 会自动用本地 D1/KV/R2（miniflare）
-# 部署前请执行：
-#   wrangler d1 create edge-openlist
-#   wrangler kv namespace create edge-openlist-kv
-#   wrangler r2 bucket create edge-openlist
-# 并把上面的 database_id / id 替换好，再到 dashboard 设置 JWT_SECRET
+# 本地开发：wrangler dev 会自动用本地 KV/R2（miniflare），开箱即用。

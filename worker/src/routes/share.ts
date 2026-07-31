@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { AppEnv, MountRow } from "../types";
-import { getShare } from "../db/schema";
+import { getStore } from "../db/store";
 import { buildDriver } from "../drivers/factory";
 import { normalizePath, sortItems, basename } from "../drivers";
 
@@ -9,7 +9,8 @@ const share = new Hono<AppEnv>();
 // 公开访问：/s/:id?pwd=xxx
 share.get("/:id", async (c) => {
   const id = c.req.param("id");
-  const rec: any = await getShare(c.env.DB, id);
+  const store = getStore(c.env);
+  const rec: any = await store.getShare(id);
   if (!rec) return c.text("分享不存在或已失效", 404);
   if (rec.expire_at && Date.now() > rec.expire_at) return c.text("分享已过期", 410);
   if (rec.password) {
@@ -20,7 +21,7 @@ share.get("/:id", async (c) => {
       return c.text("密码错误", 403);
     }
   }
-  const mount: MountRow | null = await c.env.DB.prepare("SELECT * FROM mounts WHERE id = ?").bind(rec.mount_id).first();
+  const mount: MountRow | null = await store.getMount(rec.mount_id);
   if (!mount || !mount.enabled) return c.text("源已不可用", 404);
   const path = normalizePath(rec.path);
   const driver = await buildDriver(c.env, mount);

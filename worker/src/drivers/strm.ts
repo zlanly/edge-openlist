@@ -2,6 +2,7 @@ import type { Driver, DriverConfig, Env, FileItem, MountRow, UploadSession } fro
 import { basename, joinPath, normalizePath, sortItems } from "./base";
 import { buildDriver } from "./factory";
 import { CloudBase } from "./cloud-base";
+import { getStore } from "../db/store";
 
 // 元驱动：.strm 流文件。配置 paths（换行）每行 "name:/mount/sub" 或 "/mount/sub"（取末段为名），
 // 把本挂载映射到一组底层挂载（multi-root）。list/get 转发到底层 driver；
@@ -35,7 +36,7 @@ export class StrmDriver extends CloudBase {
     const [name] = splitMount(mountPath);
     const cached = this.cache.get(name);
     if (cached) return cached;
-    const row = await this.env.DB.prepare("SELECT * FROM mounts WHERE name = ?").bind(name).first<MountRow>();
+    const row = await getStore(this.env).getMountByName(name);
     if (!row) throw new Error("strm: 未找到挂载: " + name);
     const d = await buildDriver(this.env, row);
     this.cache.set(name, d);
