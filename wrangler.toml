@@ -9,6 +9,11 @@ directory = "./web/dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
 
+# 部署前自动构建前端：wrangler deploy（含 Deploy 按钮默认的 npx wrangler deploy）会先执行此命令，
+# 避免“assets.directory 不存在”的报错。即便 Deploy 按钮未读取 package.json 的 build 脚本也生效。
+[build]
+command = "npm run build:web"
+
 # 元数据 / 用户 / 挂载配置 / 搜索索引
 [[d1_databases]]
 binding = "DB"

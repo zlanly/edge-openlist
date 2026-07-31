@@ -9,8 +9,19 @@ import oauth from "./routes/oauth";
 import { buildDriver } from "./drivers/factory";
 import { normalizePath, sortItems } from "./drivers";
 import { upsertFileCache } from "./db/schema";
+import { initDb } from "./db/init";
 
 const app = new Hono<AppEnv>();
+
+// 首次请求时自动建表（D1 自动供给场景下 CLI 迁移可能未执行，保证应用开箱即用）
+app.use("*", async (c, next) => {
+  try {
+    await initDb(c.env);
+  } catch {
+    // 建表失败不阻断静态资源等请求；DB 相关接口会自行报错
+  }
+  await next();
+});
 
 app.get("/api/health", (c) => c.json({ ok: true, title: c.env.APP_TITLE }));
 
@@ -54,6 +65,6 @@ async function crawl(env: Env): Promise<void> {
 export default {
   fetch: app.fetch,
   scheduled: async (_event: ScheduledEvent, env: Env, ctx: ExecutionContext) => {
-    ctx.waitUntil(crawl(env));
+    ctx.waitUntil(initDb(env).then(() => crawl(env)));
   },
 };

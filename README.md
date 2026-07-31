@@ -75,7 +75,7 @@ npm run build:web           # 构建前端到 web/dist
 
 ## 部署
 
-> **一键部署（推荐）**：点击顶部 **Deploy to Cloudflare Workers** 按钮 → 授权 → 确认资源名。Cloudflare 会自动：克隆仓库 → **构建前端（vite → `web/dist`）** → **创建并绑定 D1 / KV / R2（自动回填 ID）** → 跑 D1 迁移建表 → 部署。整个过程无需手动填 ID。
+> **一键部署（推荐）**：点击顶部 **Deploy to Cloudflare Workers** 按钮 → 授权 → 确认资源名。Cloudflare 会自动：克隆仓库 → **构建前端（vite → `web/dist`，由 `wrangler.toml` 的 `[build]` 保证，对默认 `npx wrangler deploy` 也生效）** → **创建并绑定 D1 / KV / R2（自动回填 ID）** → 部署。D1 表结构在 Worker **首次请求时自动创建**（`db/init.ts` 的 `CREATE TABLE IF NOT EXISTS`，与 `wrangler d1 migrations apply` 幂等），无需手动跑迁移。
 >
 > 部署完成后还需两步才能用：
 > 1. 到 Cloudflare 控制台 **Workers → 设置 → 变量** 把 `JWT_SECRET`、`BOOTSTRAP_SECRET` 改成 `openssl rand -hex 32` 生成的随机值（默认值是占位符，存在安全风险）。
