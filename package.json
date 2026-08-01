@@ -2,7 +2,7 @@
   "name": "edge-openlist",
   "version": "0.1.0",
   "private": true,
-  "description": "OpenList 风格的网盘聚合服务，运行于 Cloudflare Worker（Hono + KV + Vue3，D1 / R2 可选）",
+  "description": "OpenList 风格的网盘聚合服务，运行于 Cloudflare Worker（Hono + D1（强制）+ KV + R2（可选）+ Vue3）",
   "workspaces": [
     "worker",
     "web"

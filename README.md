@@ -1,8 +1,8 @@
 # 🌿 EdgeOpenList
 
-把 [OpenList](https://doc.oplist.org/) 的核心能力搬上 **Cloudflare Worker**：多存储挂载、目录列表 / 预览 / 下载、文件管理、WebDAV、搜索、分享。后端 Hono + **KV（默认存储）**，D1 / R2 可选增强；前端 Vue3（温暖清新风），单仓库单部署。
+把 [OpenList](https://doc.oplist.org/) 的核心能力搬上 **Cloudflare Worker**：多存储挂载、目录列表 / 预览 / 下载、文件管理、WebDAV、搜索、分享。后端 Hono + **D1（强制结构化存储）** + KV（令牌缓存）+ R2（可选落盘），前端 Vue3（温暖清新风），单仓库单部署。
 
-> 免费档起步。受 CF 约束，**大文件上传走预签名/直传、下载永远流式、列表进 KV/D1 缓存**，绝不缓冲整文件。
+> 免费档起步。受 CF 约束，**大文件上传走预签名/直传、下载永远流式、列表进 D1 缓存**，绝不缓冲整文件。
 
 [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/zlanly/edge-openlist)
 
@@ -13,11 +13,11 @@ Browser (Vue3 SPA)
       │  REST / WebDAV
       ▼
 Cloudflare Worker (Hono)
-  ├─ Auth (JWT, PBKDF2)        ── KV(users) + KV(session)
+  ├─ Auth (JWT, PBKDF2)        ── D1(users)
   ├─ FS 路由 (/api/fs/*)       ── 驱动抽象
   ├─ WebDAV (/dav/:mount/*)    ── 驱动抽象
-  ├─ 搜索 (/api/fs/search)     ── KV file_cache 索引
-  ├─ 分享 (/s/:id)             ── KV shares
+  ├─ 搜索 (/api/fs/search)     ── D1 file_cache 索引
+  ├─ 分享 (/s/:id)             ── D1 shares
   └─ OAuth (/api/oauth/:p/*)   ── OneDrive / Google Drive 授权回调（令牌存 KV）
         │
    Storage Drivers（统一接口）
@@ -26,10 +26,10 @@ Cloudflare Worker (Hono)
 
 ## 已实现
 
-- ✅ 多存储挂载（默认 KV 配置；可选 D1 强一致，代码自动切换）
+- ✅ 多存储挂载（D1 配置，强一致）
 - ✅ R2 / S3 兼容驱动：列表、Range 预览（视频/图片）、流式下载、文件管理（增删改/移动）、**预签名直传**
 - ✅ WebDAV（PROPFIND/GET/PUT/DELETE/MKCOL/MOVE + OPTIONS/LOCK 占位），兼容 rclone / Infuse
-- ✅ 搜索（列表写入 KV 索引 + 每日 Cron 后台爬取建索引）
+- ✅ 搜索（列表写入 D1 索引 + 每日 Cron 后台爬取建索引）
 - ✅ 公开分享（密码 + 过期）
 - ✅ 鉴权（JWT + PBKDF2，管理员挂载管理）
 - ✅ 自研 Vue3 前端（温暖清新风）
@@ -75,36 +75,64 @@ npm run build:web           # 构建前端到 web/dist
 
 ## 部署
 
-> **存储说明（重要）**：应用数据层（用户 / 挂载配置 / 分享 / 文件索引）**默认使用 KV**，因此只需一个 KV 命名空间即可完整运行，无需 D1。若账户具备 D1 权限，取消 `wrangler.toml` 里 `[[d1_databases]]` 注释并填好 `database_id`，代码会自动切换为 D1 存储（强一致 + SQL 搜索）。R2 仅在使用 `r2` 驱动做上传落盘时需要。三种模式代码均已支持，部署脚本统一为 `wrangler deploy`。
+应用**强制使用 D1** 作为结构化存储（用户 / 挂载 / 分享 / 文件索引）。为做到「部署时不需要任何绑定」，本仓库的 `wrangler.toml` **不声明任何 D1 / KV / R2 绑定**——先纯代码部署上线，部署完成后再到 Cloudflare 控制台逐个添加绑定即可生效。下面提供**全程在 Cloudflare 控制台（网页）操作**的部署教程，无需本地安装 Wrangler。
 
-> **一键部署（推荐）**：点击顶部 **Deploy to Cloudflare Workers** 按钮 → 授权 → 确认资源名。Cloudflare 会自动：克隆仓库 → **构建前端（vite → `web/dist`，由 `wrangler.toml` 的 `[build]` 保证，对默认 `npx wrangler deploy` 也生效）** → **创建并绑定 KV（自动回填 ID）** → 部署。D1 / R2 默认不在 `wrangler.toml` 中，故按钮不会强制要求这两项——没有 D1 权限或未启用 R2 也能一键跑起来。
->
-> 部署完成后还需两步才能用：
-> 1. 到 Cloudflare 控制台 **Workers → 设置 → 变量** 把 `JWT_SECRET`、`BOOTSTRAP_SECRET` 改成 `openssl rand -hex 32` 生成的随机值（默认值是占位符，存在安全风险）；或命令行 `npx wrangler secret put JWT_SECRET` / `npx wrangler secret put BOOTSTRAP_SECRET`。
-> 2. 创建管理员（仅首次，无用户时）：
->    ```bash
->    curl "https://你的域名/api/auth/bootstrap?secret=你的BOOTSTRAP_SECRET&username=admin&password=你的密码"
->    ```
+### 方式一：一键按钮（最简单）
 
-手动部署：
+点击仓库顶部的 **Deploy to Cloudflare Workers** 按钮 → 用 GitHub 授权登录 → 确认仓库与 Worker 名称 → 开始部署。Cloudflare 会自动克隆仓库并执行 `wrangler.toml` 里的 `[build]`（构建前端到 `web/dist`）后部署上线。**此步不需要创建任何 D1 / KV / R2 资源**，部署即可成功。
 
+> 按钮部署后直接进入「方式二的 Step 2」继续添加绑定与变量。
+
+### 方式二：在线控制台手动部署教程
+
+> 全程在 https://dash.cloudflare.com 网页操作，不需要本地环境。
+
+**Step 1 · 创建 Worker 并部署代码**
+1. 左侧菜单 **Workers & Pages** → 右上角 **Create** → 选择 **Create Worker**。
+2. 给 Worker 起名（如 `edge-openlist`），点 **Deploy**（先用默认 Hello World 占位也行，下一步会被仓库代码覆盖）。
+3. 进入该 Worker 详情页 → **Settings → Build → 绑定 Git 仓库**（或 **Deployations → Connect Git**），选择你的 GitHub 仓库 `zlanly/edge-openlist`，分支 `main`，构建命令留空（仓库 `wrangler.toml` 的 `[build]` 会自动构建前端）。保存并触发一次部署。
+4. 等待部署完成（日志出现 `Uploaded edge-openlist` / `Success`）。此时 Worker 已上线，但因尚无 D1 绑定，访问会提示「未检测到 D1 数据库绑定」——这是预期内的，下一步修复。
+
+**Step 2 · 添加变量 / Secrets（JWT 与引导密钥）**
+1. Worker 详情页 → **Settings → Variables and Secrets**（或 **Variables**）。
+2. 点 **Add** 添加以下 **Secret**（选 Secret 类型，不可读取，更安全）：
+   - `JWT_SECRET`：值填 `openssl rand -hex 32` 生成的随机串（或任意 32+ 位随机值）。
+   - `BOOTSTRAP_SECRET`：值填另一串随机值，用于首次创建管理员。
+3. 保存。添加变量会触发一次重新部署使其生效。
+
+**Step 3 · 添加 D1 数据库绑定（必选，核心存储）**
+1. 左侧菜单 **Storage & Databases → D1 SQL Database** → **Create** 创建一个数据库，名称 `edge-openlist`，记下它。
+2. 回到 Worker 详情页 → **Settings → Bindings → Add → D1 Database Binding**。
+3. 变量名（Variable name）填 **`DB`**（必须与代码一致），Database 选刚创建的 `edge-openlist`，保存。
+4. 保存绑定同样会重新部署。
+
+**Step 4 · 添加 KV 命名空间绑定（令牌缓存，必选）**
+1. 左侧菜单 **Storage & Databases → KV** → **Create a namespace**，名称 `edge-openlist-kv`。
+2. Worker 详情页 → **Settings → Bindings → Add → KV Namespace Binding**，变量名填 **`KV`**，选刚创建的命名空间，保存。
+
+**Step 5 · 添加 R2 桶绑定（可选，仅 `r2` 驱动上传落盘需要）**
+1. 左侧菜单 **Storage & Databases → R2** —— 若未启用 R2，按提示启用（免费额度通常够用）。
+2. 创建桶 `edge-openlist`。
+3. Worker 详情页 → **Settings → Bindings → Add → R2 Bucket Binding**，变量名填 **`R2`**，选该桶，保存。
+
+> 绑定名务必为 `DB` / `KV` / `R2`，与代码一致；改完任一项绑定后控制台会自动重新部署。
+
+**Step 6 · 初始化 D1 表**
+Worker 在**首次收到请求时会自动执行 `CREATE TABLE IF NOT EXISTS`**（`worker/src/db/init.ts`，与迁移脚本幂等），所以通常无需手动迁移。若想显式建表，本地装好 Wrangler 后执行：
 ```bash
-# 1. 创建 KV（必需）；D1 / R2 按需创建并在 wrangler.toml 取消对应注释
-wrangler kv namespace create edge-openlist-kv
-# wrangler d1 create edge-openlist            # 可选：强一致存储
-# wrangler r2 bucket create edge-openlist    # 可选：上传落盘（需账户已启用 R2）
-
-# 2. 把 KV id 填进 wrangler.toml 的 [[kv_namespaces]] id（D1/R2 同理）
-# 3. dashboard / wrangler secret put 设置变量 JWT_SECRET、BOOTSTRAP_SECRET（或写进 .dev.vars）
-npm run build:web          # 先构建前端
-npm run deploy             # 部署（含 [build] 自动构建前端）
-
-# 4. 若使用 D1，首次部署前执行迁移（KV 模式无需）
-npm run db:migrate
-
-# 5. 创建管理员（仅首次，无用户时）
-curl "https://你的域名/api/auth/bootstrap?secret=你的BOOTSTRAP_SECRET&username=admin&password=你的密码"
+wrangler d1 migrations apply edge-openlist --remote   # 需先在 wrangler.toml 声明 [[d1_databases]]
 ```
+（仅用控制台部署、不碰本地 wrangler.toml 时，可跳过此步，依赖运行时自动建表。）
+
+**Step 7 · 创建管理员（仅首次）**
+```bash
+curl "https://你的Worker子域.workers.dev/api/auth/bootstrap?secret=你的BOOTSTRAP_SECRET&username=admin&password=你的密码"
+```
+返回 `{"ok":true,...}` 即成功。随后用该账号登录前端即可挂载网盘。
+
+### 验证
+- 健康检查：`GET /api/health` → `{"ok":true,"title":"EdgeOpenList"}`
+- 若未加 D1 绑定就访问，会返回清晰错误：「未检测到 D1 数据库绑定……请到 Cloudflare 控制台为 Worker 添加 D1 数据库绑定」，按 Step 3 处理即可。
 
 ## 驱动配置字段
 
@@ -127,7 +155,7 @@ curl "https://你的域名/api/auth/bootstrap?secret=你的BOOTSTRAP_SECRET&user
 
 - CPU 10ms/请求：重目录解析靠缓存与分页；大计算需升付费档。
 - 请求体 100MB：R2 走预签名直传；WebDAV 经 Worker 流式代理（≤100MB）。
-- KV 最终一致：默认挂载配置存 KV（D1 可选强一致），注意 KV 读后写延迟。
+- D1 强一致：用户 / 挂载 / 分享 / 文件索引存 D1（强制）；KV 仅用于驱动令牌缓存（最终一致）。
 - 内存 128MB：所有文件一律流式，不缓冲整文件。
 
 ## 目录
@@ -137,7 +165,7 @@ worker/src/
   index.ts            Hono 入口 + 路由装配 + Cron 爬取
   types.ts            环境/接口类型
   util/auth.ts        JWT + PBKDF2
-  db/store.ts         存储抽象（KV / D1 双实现，自动选择）
+  db/store.ts         存储抽象（强制 D1 实现；未绑定 D1 时抛出明确错误）
   db/schema.ts        D1 封装（D1Store 委托对象）
   middleware/auth.ts  鉴权中间件
   drivers/            驱动抽象与各后端实现
