@@ -44,7 +44,7 @@ export const api = {
     return data;
   },
   async listMounts() {
-    const res = await req("/api/mounts/");
+    const res = await req("/api/mounts");
     return (await res.json()).items as any[];
   },
   async listFiles(mount: number, path: string) {
@@ -106,7 +106,7 @@ export const api = {
     return (await res.json()) as { drivers: string[]; schemas: any[] };
   },
   async createMount(body: { name: string; driver: string; config: Record<string, unknown>; root?: string; order?: number }) {
-    const res = await req("/api/mounts/", {
+    const res = await req("/api/mounts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

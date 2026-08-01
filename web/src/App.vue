@@ -67,7 +67,9 @@ function logout() {
 }
 
 async function loadMounts() {
-  mounts.value = await api.listMounts();
+  // 防御：接口异常/返回非数组时不要抛错把用户踢回登录页
+  const items = await api.listMounts();
+  mounts.value = Array.isArray(items) ? items : [];
   if (mounts.value.length && curMount.value === null) {
     await openMount(mounts.value[0].id);
   }

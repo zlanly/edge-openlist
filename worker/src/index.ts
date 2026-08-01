@@ -11,7 +11,8 @@ import { normalizePath, sortItems } from "./drivers";
 import { getStore } from "./db/store";
 import { initDb } from "./db/init";
 
-const app = new Hono<AppEnv>();
+// strict:false 让尾斜杠无关紧要（/api/mounts 与 /api/mounts/ 等价），避免前端带斜杠请求 404
+const app = new Hono<AppEnv>({ strict: false });
 
 // 首次请求时自动建表（D1 自动供给场景下 CLI 迁移可能未执行，保证应用开箱即用）
 app.use("*", async (c, next) => {
