@@ -144,6 +144,15 @@ export const api = {
   previewUrl(mount: number, path: string) {
     return `/api/fs/raw?mount=${mount}&path=${encodeURIComponent(path)}`;
   },
+  async changePassword(old_password: string, new_password: string) {
+    const res = await req("/api/auth/change-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ old_password, new_password }),
+    });
+    if (!res.ok) throw new Error((await res.json()).error || "修改失败");
+    return res.json();
+  },
 };
 
 // 直传文件：根据 upload/init 返回的凭证上传（R2/S3 预签名直传，WebDAV 经 Worker 代理）

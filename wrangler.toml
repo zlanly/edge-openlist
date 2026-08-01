@@ -20,7 +20,7 @@ command = "npm run build:web"
 # 为让「部署时不需要任何绑定」，本文件【不声明任何 D1 / KV / R2 绑定】，
 # 先纯代码部署上线；部署完成后，再到 Cloudflare 控制台为 Worker 添加绑定：
 #   Settings → Bindings   添加 D1（绑定名 DB，必选）、KV（绑定名 KV，令牌缓存）、R2（绑定名 R2，可选）
-#   Settings → Variables  添加 JWT_SECRET / BOOTSTRAP_SECRET（建议用 Secrets，不可读取）
+#   Settings → Variables  添加 JWT_SECRET（建议用 Secrets，不可读取）
 # 添加绑定后控制台会自动重新部署使其生效。详见下方 README「在线控制台部署教程」。
 # ─────────────────────────────────────────────────────────────
 
@@ -30,6 +30,6 @@ crons = ["13 3 * * *"]
 
 [vars]
 APP_TITLE = "EdgeOpenList"
-# JWT_SECRET 与 BOOTSTRAP_SECRET 部署后在控制台添加（见 README），此处不预置。
+# JWT_SECRET 部署后在控制台添加（见 README），此处不预置。
 
 # 本地开发：wrangler dev 会自动用本地 D1/KV/R2（miniflare），开箱即用。

@@ -93,12 +93,13 @@ npm run build:web           # 构建前端到 web/dist
 3. 进入该 Worker 详情页 → **Settings → Build → 绑定 Git 仓库**（或 **Deployations → Connect Git**），选择你的 GitHub 仓库 `zlanly/edge-openlist`，分支 `main`，构建命令留空（仓库 `wrangler.toml` 的 `[build]` 会自动构建前端）。保存并触发一次部署。
 4. 等待部署完成（日志出现 `Uploaded edge-openlist` / `Success`）。此时 Worker 已上线，但因尚无 D1 绑定，访问会提示「未检测到 D1 数据库绑定」——这是预期内的，下一步修复。
 
-**Step 2 · 添加变量 / Secrets（JWT 与引导密钥）**
+**Step 2 · 添加变量 / Secrets（仅 JWT）**
 1. Worker 详情页 → **Settings → Variables and Secrets**（或 **Variables**）。
 2. 点 **Add** 添加以下 **Secret**（选 Secret 类型，不可读取，更安全）：
    - `JWT_SECRET`：值填 `openssl rand -hex 32` 生成的随机串（或任意 32+ 位随机值）。
-   - `BOOTSTRAP_SECRET`：值填另一串随机值，用于首次创建管理员。
 3. 保存。添加变量会触发一次重新部署使其生效。
+
+> 管理员初始化**不再需要任何密钥**：部署后直接浏览器访问 `/api/auth/setup` 即可创建默认管理员（见 Step 7），无需 `BOOTSTRAP_SECRET`。
 
 **Step 3 · 添加 D1 数据库绑定（必选，核心存储）**
 1. 左侧菜单 **Storage & Databases → D1 SQL Database** → **Create** 创建一个数据库，名称 `edge-openlist`，记下它。
@@ -124,11 +125,16 @@ wrangler d1 migrations apply edge-openlist --remote   # 需先在 wrangler.toml 
 ```
 （仅用控制台部署、不碰本地 wrangler.toml 时，可跳过此步，依赖运行时自动建表。）
 
-**Step 7 · 创建管理员（仅首次）**
-```bash
-curl "https://你的Worker子域.workers.dev/api/auth/bootstrap?secret=你的BOOTSTRAP_SECRET&username=admin&password=你的密码"
+**Step 7 · 创建管理员（仅首次，浏览器一步完成）**
+在浏览器中直接访问（把子域换成你的）：
 ```
-返回 `{"ok":true,...}` 即成功。随后用该账号登录前端即可挂载网盘。
+https://你的Worker子域.workers.dev/api/auth/setup
+```
+页面会提示「初始化完成」，并自动创建默认管理员：**用户名 `admin` ／ 密码 `admin`**。
+> 该路径**仅当系统尚无任何用户时**生效，重复访问安全（已存在用户会提示「已完成初始化」）。
+> ⚠️ 默认密码过于简单，**登录后请立即点右上角「修改密码」改掉**（也可在后台账号设置中修改）。
+
+随后用 `admin / admin` 登录前端即可挂载网盘。
 
 ### 验证
 - 健康检查：`GET /api/health` → `{"ok":true,"title":"EdgeOpenList"}`

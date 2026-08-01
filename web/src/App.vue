@@ -8,6 +8,25 @@ const loginU = ref("");
 const loginP = ref("");
 const error = ref("");
 
+// 修改密码
+const showPwd = ref(false);
+const oldP = ref("");
+const newP = ref("");
+const pwdMsg = ref("");
+const pwdErr = ref("");
+async function doChangePwd() {
+  pwdMsg.value = "";
+  pwdErr.value = "";
+  try {
+    await api.changePassword(oldP.value, newP.value);
+    pwdMsg.value = "密码已修改，请牢记新密码";
+    oldP.value = "";
+    newP.value = "";
+  } catch (e: any) {
+    pwdErr.value = e.message;
+  }
+}
+
 const mounts = ref<any[]>([]);
 const curMount = ref<number | null>(null);
 const curPath = ref("/");
@@ -257,6 +276,7 @@ onMounted(async () => {
       <div class="me">
         <span>{{ user?.username }}</span>
         <button v-if="user?.role === 'admin'" class="ghost" @click="openManage">管理挂载</button>
+        <button class="ghost" @click="showPwd = true">修改密码</button>
         <button class="ghost" @click="logout">退出</button>
       </div>
     </header>
@@ -364,6 +384,23 @@ onMounted(async () => {
       </div>
     </div>
   </div>
+
+  <!-- 修改密码 -->
+  <div v-if="showPwd" class="modal-mask" @click.self="showPwd = false">
+    <div class="modal card" style="width: 380px">
+      <div class="modal-head">
+        <h3>修改密码</h3>
+        <button class="ghost" @click="showPwd = false">关闭</button>
+      </div>
+      <div class="modal-body" style="display: flex; flex-direction: column; gap: 10px">
+        <input v-model="oldP" type="password" placeholder="当前密码" />
+        <input v-model="newP" type="password" placeholder="新密码（至少 6 位）" />
+        <p v-if="pwdErr" class="err">{{ pwdErr }}</p>
+        <p v-if="pwdMsg" class="ok">{{ pwdMsg }}</p>
+        <button class="primary" @click="doChangePwd">保存新密码</button>
+      </div>
+    </div>
+  </div>
 </template>
 
 <style scoped>
@@ -371,6 +408,7 @@ onMounted(async () => {
 .login-wrap h1 { margin: 0; color: var(--accent); }
 .login-wrap .sub { margin: 0 0 8px; color: var(--text-soft); font-size: 13px; }
 .err { color: #e06c5a; font-size: 13px; }
+.ok { color: var(--accent); font-size: 13px; }
 .app { height: 100%; display: flex; flex-direction: column; padding: 16px; gap: 14px; }
 .topbar { display: flex; align-items: center; gap: 16px; padding: 12px 18px; }
 .brand { font-weight: 700; color: var(--accent); }

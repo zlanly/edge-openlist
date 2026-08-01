@@ -22,6 +22,7 @@ export interface Store {
   // 用户
   getUserByName(username: string): Promise<{ id: number; username: string; password_hash: string; role: string } | null>;
   createUser(username: string, password_hash: string, role?: string): Promise<void>;
+  updateUserPassword(id: number, password_hash: string): Promise<void>;
   countUsers(): Promise<number>;
 
   // 文件缓存 / 搜索索引
@@ -62,6 +63,9 @@ class D1Store implements Store {
   }
   createUser(u: string, h: string, r?: string) {
     return D1.createUser(this.db, u, h, r);
+  }
+  updateUserPassword(id: number, h: string) {
+    return D1.updateUserPassword(this.db, id, h);
   }
   countUsers() {
     return D1.countUsers(this.db);

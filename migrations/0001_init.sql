@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS shares (
   created_at INTEGER NOT NULL
 );
 
--- 首次部署后，用以下语句创建默认管理员（密码 edgeopenlist，请部署后改密）：
+-- 首次部署后，用以下语句创建默认管理员（密码请自行生成哈希，建完请立即改密）：
 -- INSERT INTO users (username, password_hash, role, created_at)
 -- VALUES ('admin', '<由脚本生成>', 'admin', unixepoch());
--- 更简单：部署后调用一次 /api/auth/bootstrap?secret=... （见 routes/auth.ts）
+-- 更简单：部署后浏览器访问一次 /api/auth/setup 即创建 admin/admin（见 routes/auth.ts）

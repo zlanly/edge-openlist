@@ -87,6 +87,10 @@ export async function countUsers(db: D1Database): Promise<number> {
   return r?.c ?? 0;
 }
 
+export async function updateUserPassword(db: D1Database, id: number, password_hash: string): Promise<void> {
+  await db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").bind(password_hash, id).run();
+}
+
 // ---------- 文件缓存 / 搜索索引 ----------
 
 export async function upsertFileCache(db: D1Database, mountId: number, items: FileItem[], dirPath: string): Promise<void> {

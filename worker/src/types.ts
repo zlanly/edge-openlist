@@ -6,7 +6,6 @@ export interface Env {
   ASSETS: Fetcher;
   JWT_SECRET: string;
   APP_TITLE: string;
-  BOOTSTRAP_SECRET?: string;
   // 可选：自建 S3 网关等全局配置可在此扩展
 }
 
