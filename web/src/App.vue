@@ -482,4 +482,64 @@ onMounted(async () => {
 .add { margin-top: 10px; width: 100%; border: 1px dashed var(--accent); color: var(--accent); background: transparent; border-radius: 8px; padding: 8px; cursor: pointer; }
 .primary { background: var(--accent); color: #fff; border: none; border-radius: 10px; padding: 10px 16px; font-weight: 600; cursor: pointer; }
 .primary:hover { filter: brightness(1.05); }
+
+/* ───── 移动端适配 ───── */
+@media (max-width: 768px) {
+  .login-wrap { width: auto; margin: 8vh 16px; padding: 24px; }
+  .app { padding: 10px; gap: 10px; }
+  .topbar {
+    flex-wrap: wrap;
+    padding: 12px;
+    gap: 10px;
+  }
+  .brand { font-size: 16px; }
+  .search { flex-basis: 100%; order: 3; max-width: none; margin-top: 4px; }
+  .me {
+    margin-left: auto;
+    order: 2;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: flex-end;
+  }
+  .body { flex-direction: column; gap: 10px; min-height: 0; }
+  .side {
+    width: 100%;
+    max-height: 150px;
+    padding: 10px;
+    overflow: auto;
+  }
+  .side-title { margin-bottom: 6px; }
+  .mount { padding: 7px 10px; margin-bottom: 3px; }
+  .main { padding: 12px; overflow: auto; }
+  .toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .actions { display: flex; gap: 8px; width: 100%; }
+  .actions button { flex: 1; }
+  .grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; }
+  .file { padding: 10px; border-radius: 12px; }
+  .ic { font-size: 32px; }
+  .hint { padding: 30px 10px; }
+  .empty-cta button { width: 100%; max-width: 360px; }
+  .modal-mask { padding: 12px; }
+  .modal {
+    width: 100%;
+    max-width: 100%;
+    max-height: 92vh;
+    padding: 14px;
+  }
+  .modal-body { flex-direction: column; gap: 12px; }
+  .m-list {
+    width: 100%;
+    max-height: 140px;
+    border-right: none;
+    border-bottom: 1px solid var(--bg-soft);
+    padding-right: 0;
+    padding-bottom: 10px;
+  }
+  .m-form { padding-right: 0; }
+}
 </style>

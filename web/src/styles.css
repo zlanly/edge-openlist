@@ -51,3 +51,9 @@ input:focus, select:focus { border-color: var(--accent); }
   border-radius: var(--radius);
   box-shadow: var(--shadow);
 }
+
+@media (max-width: 768px) {
+  /* 防止 iOS 聚焦输入框时自动放大 */
+  input, select, textarea { font-size: 16px; }
+  button { padding: 10px 14px; }
+}
