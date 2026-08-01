@@ -2,6 +2,7 @@ import { Hono, type Context } from "hono";
 import type { AppEnv } from "../types";
 import { getStore } from "../db/store";
 import { createToken, hashPassword, verifyPassword, extractToken, verifyToken } from "../util/auth";
+import { authMiddleware } from "../middleware/auth";
 
 const auth = new Hono<AppEnv>();
 
@@ -101,6 +102,11 @@ auth.post("/change-password", async (c) => {
   }
   await store.updateUserPassword(u.id, await hashPassword(new_password));
   return c.json({ ok: true });
+});
+
+// 当前登录用户（供前端刷新后恢复 user，避免管理员按钮在刷新后消失）
+auth.get("/me", authMiddleware, async (c) => {
+  return c.json({ user: c.get("user") });
 });
 
 export default auth;

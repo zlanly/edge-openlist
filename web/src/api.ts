@@ -22,6 +22,17 @@ async function req(path: string, opts: RequestInit = {}) {
   return res;
 }
 
+// 容错：后端偶发返回非 JSON（如瞬时 500）时，避免 res.json() 直接抛丑错误
+async function errText(res: Response): Promise<string> {
+  const t = await res.text();
+  try {
+    const j = JSON.parse(t);
+    return (j && j.error) || t || `请求失败 (${res.status})`;
+  } catch {
+    return t || `请求失败 (${res.status})`;
+  }
+}
+
 export interface FileItem {
   name: string;
   path: string;
@@ -38,14 +49,19 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password }),
     });
-    if (!res.ok) throw new Error((await res.json()).error || "登录失败");
+    if (!res.ok) throw new Error(await errText(res) || "登录失败");
     const data = await res.json();
     setToken(data.token);
     return data;
   },
   async listMounts() {
-    const res = await req("/api/mounts");
-    return (await res.json()).items as any[];
+    try {
+      const res = await req("/api/mounts");
+      const j = await res.json();
+      return (j && j.items) || [];
+    } catch {
+      return [];
+    }
   },
   async listFiles(mount: number, path: string) {
     const res = await req(`/api/fs/list?mount=${mount}&path=${encodeURIComponent(path)}`);
@@ -111,7 +127,7 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error((await res.json()).error || "创建失败");
+    if (!res.ok) throw new Error(await errText(res) || "创建失败");
     return (await res.json()) as { id: number };
   },
   async updateMount(id: number, body: { name?: string; driver?: string; config?: Record<string, unknown>; root?: string; order?: number; enabled?: number }) {
@@ -120,12 +136,12 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error((await res.json()).error || "更新失败");
+    if (!res.ok) throw new Error(await errText(res) || "更新失败");
     return res.json();
   },
   async deleteMount(id: number) {
     const res = await req(`/api/mounts/${id}`, { method: "DELETE" });
-    if (!res.ok) throw new Error((await res.json()).error || "删除失败");
+    if (!res.ok) throw new Error(await errText(res) || "删除失败");
     return res.json();
   },
   async oauthProviders() {
@@ -150,7 +166,7 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ old_password, new_password }),
     });
-    if (!res.ok) throw new Error((await res.json()).error || "修改失败");
+    if (!res.ok) throw new Error(await errText(res) || "修改失败");
     return res.json();
   },
   async needsSetup(): Promise<boolean> {
@@ -161,6 +177,20 @@ export const api = {
       return !!j.needed;
     } catch {
       return false;
+    }
+  },
+  // 当前登录用户（刷新后恢复 user；401 返回 null 由调用方登出）
+  async me(): Promise<{ id: number; username: string; role: string } | null> {
+    const token = getToken();
+    if (!token) return null;
+    try {
+      const res = await fetch("/api/auth/me", { headers: { Authorization: "Bearer " + token } });
+      if (res.status === 401) { clearToken(); return null; }
+      if (!res.ok) return null;
+      const j = await res.json();
+      return j.user as { id: number; username: string; role: string };
+    } catch {
+      return null;
     }
   },
 };

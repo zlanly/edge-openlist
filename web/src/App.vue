@@ -205,6 +205,11 @@ async function openManage() {
   showManage.value = true;
   if (editingId.value === null && schemas.value.length) selectDriver(schemas.value[0].id);
 }
+async function openAddMount() {
+  editingId.value = null;
+  await openManage();
+}
+
 function selectDriver(id: string) {
   const s = schemas.value.find((x) => x.id === id);
   const cfg: Record<string, any> = {};
@@ -253,6 +258,10 @@ async function delMount(m: any) {
 
 onMounted(async () => {
   if (token.value) {
+    // 刷新后 token 仍在，但 user 未恢复 —— 调 /me 重建（含 role），否则管理员按钮会消失
+    const me = await api.me();
+    if (!me) { logout(); return; }
+    user.value = me;
     try {
       await loadMounts();
     } catch {
@@ -327,6 +336,10 @@ onMounted(async () => {
           </div>
 
           <div v-if="loading" class="hint">加载中…</div>
+          <div v-else-if="!mounts.length" class="hint empty-cta">
+            <p>还没有挂载任何网盘</p>
+            <button class="primary" @click="openAddMount">＋ 添加网盘</button>
+          </div>
           <div v-else-if="!items.length" class="hint">空空如也</div>
           <div v-else class="grid">
             <div v-for="it in items" :key="it.path" class="file" @click="enterDir(it)">
@@ -445,6 +458,8 @@ onMounted(async () => {
 .ops .sm { padding: 4px 8px; font-size: 11px; }
 .danger { color: #e06c5a; }
 .hint { color: var(--text-soft); padding: 40px; text-align: center; }
+.empty-cta { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.empty-cta p { margin: 0; }
 .modal-mask { position: fixed; inset: 0; background: rgba(40, 30, 20, 0.32); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 20px; }
 .modal { width: 860px; max-width: 100%; max-height: 88vh; display: flex; flex-direction: column; padding: 18px; }
 .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }

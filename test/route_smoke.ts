@@ -39,14 +39,18 @@ async function main() {
   console.log(`/api/mounts/drivers -> ${d.status}`);
   const o = await raw("/api/oauth/providers", env, { Authorization: "Bearer " + token });
   console.log(`/api/oauth/providers -> ${o.status}`);
+  const me = await raw("/api/auth/me", env, { Authorization: "Bearer " + token });
+  console.log(`/api/auth/me -> ${me.status} ${me.txt.slice(0, 60)}`);
   const create = await raw("/api/mounts/", env, { Authorization: "Bearer " + token }, "POST", JSON.stringify({ name: "t", driver: "local" }));
   console.log(`POST /api/mounts/ -> ${create.status}`);
 
   // 不带 token 应 401
   const noAuth = await raw("/api/mounts/", env);
   console.log(`/api/mounts/ (无 token) -> ${noAuth.status}`);
+  const meNoAuth = await raw("/api/auth/me", env);
+  console.log(`/api/auth/me (无 token) -> ${meNoAuth.status}`);
 
-  const ok = m.status === 200 && mNoSlash.status === 200 && d.status === 200 && o.status === 200 && create.status === 200 && noAuth.status === 401;
+  const ok = m.status === 200 && mNoSlash.status === 200 && d.status === 200 && o.status === 200 && me.status === 200 && create.status === 200 && noAuth.status === 401 && meNoAuth.status === 401;
   console.log(ok ? "\n✅ adminMiddleware 修复生效（管理接口鉴权通过）" : "\n❌ 仍有问题");
   if (!ok) process.exit(1);
 }
