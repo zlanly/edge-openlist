@@ -22,9 +22,28 @@ export class WebDAVDriver implements Driver {
     this.prefix = pre ? pre.replace(/^\/+|\/+$/g, "") : "";
   }
 
+  /**
+   * 拼上游 URL。
+   *
+   * 关键：必须逐段做百分号编码。原实现直接把原始路径塞进 URL，中文 / 空格 / #
+   * / ? 之类的字符全部裸奔：
+   *   · `#` 之后的部分被当成 fragment，整段路径被截断；
+   *   · `?` 之后被当成 query；
+   *   · 中文在部分服务端（以及 MOVE 的 Destination 头，头字段只能装 ISO-8859-1）
+   *     会被按 Latin-1 解释，落地成 `æ°å»ºç®å½` 这种乱码目录。
+   * 编码后 URL 全 ASCII，Destination 头也就自然合法了。
+   */
   private url(path: string): string {
-    const rel = normalizePath(path).replace(/^\//, "");
-    return this.prefix ? `${this.endpoint}/${this.prefix}/${rel}` : `${this.endpoint}/${rel}`;
+    const rel = normalizePath(path)
+      .replace(/^\//, "")
+      .split("/")
+      .filter(Boolean)
+      .map(encodeURIComponent)
+      .join("/");
+    const pre = this.prefix
+      ? this.prefix.split("/").filter(Boolean).map(encodeURIComponent).join("/") + "/"
+      : "";
+    return `${this.endpoint}/${pre}${rel}`;
   }
 
   private davHeaders(extra: Record<string, string> = {}): Record<string, string> {
@@ -42,29 +61,44 @@ export class WebDAVDriver implements Driver {
     if (!resp.ok) throw new Error(`WebDAV PROPFIND 失败: ${resp.status}`);
     const xml = await resp.text();
     const items: FileItem[] = [];
-    const respRe = /<response>([\s\S]*?)<\/response>/g;
+    // 命名空间前缀必须容忍：Nextcloud 发 <d:response>，nginx-dav / 群晖发 <D:response>，
+    // 只有极少数实现发裸 <response>。原来的正则只认裸标签，接上真实服务器的结果
+    // 就是「挂载成功但目录永远是空的」，用户完全无从判断哪里出了问题。
+    const respRe = /<(?:[A-Za-z0-9_.-]+:)?response[\s>]([\s\S]*?)<\/(?:[A-Za-z0-9_.-]+:)?response>/g;
     const base = this.url(path);
     let m: RegExpExecArray | null;
     while ((m = respRe.exec(xml))) {
       const block = m[1];
-      const href = (block.match(/<href>([\s\S]*?)<\/href>/) || [])[1];
+      const href = (block.match(/<(?:[A-Za-z0-9_.-]+:)?href>([\s\S]*?)<\/(?:[A-Za-z0-9_.-]+:)?href>/) || [])[1];
       if (!href) continue;
-      const decoded = decodeURIComponent(href);
-      // 按 pathname 比较（兼容 href 为完整 URL 或仅路径两种形式）
+      // href 本身就是百分号编码的，先按 URL 解析再取末段解码；
+      // 若先 decodeURIComponent 再喂给 URL()，文件名里的 # 和 ? 会被当成
+      // fragment / query，含这些字符的文件会直接从列表里消失。
       const basePath = new URL(base).pathname.replace(/\/$/, "");
-      const itemPath = new URL(decoded, base).pathname.replace(/\/$/, "");
+      let itemPath: string;
+      try {
+        itemPath = new URL(href.trim(), base).pathname.replace(/\/$/, "");
+      } catch {
+        continue;
+      }
       if (itemPath === basePath) continue; // 跳过自身
-      const isDir = /<collection\s*\/?>/.test(block);
-      const name = decodeURIComponent(basename(decoded.replace(/\/$/, "")));
-      const size = Number((block.match(/<getcontentlength>(\d+)/) || [])[1] || 0);
-      const lm = (block.match(/<getlastmodified>([^<]+)/) || [])[1];
+      const isDir = /<(?:[A-Za-z0-9_.-]+:)?collection\s*\/?>/.test(block);
+      let name: string;
+      try {
+        name = decodeURIComponent(basename(itemPath));
+      } catch {
+        name = basename(itemPath);
+      }
+      if (!name) continue;
+      const size = Number((block.match(/<(?:[A-Za-z0-9_.-]+:)?getcontentlength>(\d+)/) || [])[1] || 0);
+      const lm = (block.match(/<(?:[A-Za-z0-9_.-]+:)?getlastmodified>([^<]+)/) || [])[1];
       items.push({
         name,
         path: joinPath(path, name),
         is_dir: isDir,
         size,
         modified: lm ? new Date(lm).getTime() : 0,
-        etag: (block.match(/<getetag>([^<]+)/) || [])[1],
+        etag: (block.match(/<(?:[A-Za-z0-9_.-]+:)?getetag>([^<]+)/) || [])[1],
       });
     }
     return items;

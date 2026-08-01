@@ -8,6 +8,17 @@ const INITIAL_CHUNK = 4 << 20; // 4MB
 const INITIAL_THRESHOLD = 4 << 30; // 4GB
 const BOUND = "----EdgeOpenListTeraboxBoundary";
 
+// ---- 免费档护栏 ----
+// Workers 单次请求的 subrequest 上限是 50（免费档）。原实现里
+// apiRequest 会无上限自递归、getFiles 会无上限翻页，任何一处失控都会撞上限，
+// 请求被运行时直接掐断 —— 前端表现就是「点了没反应，一直转圈」。
+const MAX_RETRY_DEPTH = 3; // jsToken 重置 / 域名重定向的重试深度
+const MAX_PAGES = 20; // 单目录最多翻 20 页
+const PAGE_SIZE = 100;
+const MAX_ITEMS = MAX_PAGES * PAGE_SIZE;
+/** jsToken 与域名前缀的 KV 缓存时长；避免每次请求都去抓一遍首页 HTML。 */
+const TOKEN_TTL_S = 20 * 60;
+
 // 海外版 TeraBox（Cookie 登录态）。端点/签名/分片上传流程来自 OpenList drivers/terabox。
 // 鉴权：Cookie；下载需 RC4-like sign() 经 /api/home/info 的 sign1/sign3 生成。
 export class TeraboxDriver extends CloudBase {
@@ -24,20 +35,80 @@ export class TeraboxDriver extends CloudBase {
     return (this.cfg as Record<string, unknown>)[k] as string;
   }
 
+  private get cacheKey(): string {
+    return `terabox:sess:${this.mountId}`;
+  }
+
+  private get kv(): KVNamespace | null {
+    const kv = this.env?.KV;
+    return kv && typeof kv.get === "function" ? kv : null;
+  }
+
   async init(cfg: DriverConfig): Promise<void> {
     await super.init(cfg);
     this.cookie = this.cfgStr("cookie") || "";
+    if (!this.cookie) throw new Error("terabox: 未配置 Cookie，请到管理后台填写");
     this.orderBy = this.cfgStr("order_by") || "";
     this.orderDirection = this.cfgStr("order_direction") || "asc";
     this.downloadApi = this.cfgStr("download_api") || "official";
     this.baseUrl = "https://www.terabox.com";
     this.urlDomainPrefix = "jp";
     this.jsToken = "";
+
+    // 原实现每次构造驱动都同步打一次 /api/check/login：
+    // 列个目录要 2 次往返，点开一个文件要 4 次，白白吃掉延迟和 subrequest 配额。
+    // 改为从 KV 复用上次的 jsToken / 域名前缀，只有在真正调用 API 且被上游
+    // 判定令牌失效（errno 4000023/450016）时才现取 —— 少一次强制往返。
+    const cached = await this.loadSession();
+    if (cached) {
+      this.jsToken = cached.jsToken || "";
+      if (cached.prefix) {
+        this.urlDomainPrefix = cached.prefix;
+        this.baseUrl = `https://${cached.prefix}.terabox.com`;
+      }
+      return;
+    }
+
     const resp = await this.apiRequest("GET", "/api/check/login", null);
     if (resp.errno !== 0) {
       if (resp.errno === 9000) throw new Error("terabox: 该地区暂不可用");
-      throw new Error("terabox: Cookie 登录校验失败");
+      throw new Error("terabox: Cookie 登录校验失败，请到管理后台更新 Cookie");
     }
+    await this.saveSession();
+  }
+
+  private async loadSession(): Promise<{ jsToken: string; prefix: string } | null> {
+    const kv = this.kv;
+    if (!kv) return null;
+    try {
+      const raw = await kv.get(this.cacheKey);
+      if (!raw) return null;
+      const v = JSON.parse(raw) as { jsToken?: string; prefix?: string; cookieHash?: string };
+      // Cookie 换了就让缓存失效，否则会一直拿旧账号的令牌打上游
+      if (v.cookieHash !== this.cookieHash()) return null;
+      return { jsToken: v.jsToken || "", prefix: v.prefix || "" };
+    } catch {
+      return null;
+    }
+  }
+
+  private async saveSession(): Promise<void> {
+    const kv = this.kv;
+    if (!kv) return;
+    try {
+      await kv.put(
+        this.cacheKey,
+        JSON.stringify({ jsToken: this.jsToken, prefix: this.urlDomainPrefix, cookieHash: this.cookieHash() }),
+        { expirationTtl: TOKEN_TTL_S }
+      );
+    } catch {
+      // KV 写失败不影响本次请求
+    }
+  }
+
+  /** Cookie 指纹（不落明文到 KV）。 */
+  private cookieHash(): string {
+    return md5Hex(new TextEncoder().encode(this.cookie));
   }
 
   protected async hdrs(): Promise<Record<string, string>> {
@@ -56,8 +127,15 @@ export class TeraboxDriver extends CloudBase {
     pathOrUrl: string,
     params?: Record<string, string> | null,
     body?: BodyInit | null,
-    contentType?: string
+    contentType?: string,
+    depth = 0
   ): Promise<any> {
+    // 递归深度上限：原实现在 jsToken 一直取不到（Cookie 失效）时会无限自递归，
+    // 每层还要多打一次首页 HTML，直到撞上 subrequest / CPU 上限被运行时杀掉。
+    if (depth > MAX_RETRY_DEPTH) {
+      throw new Error("terabox: 多次重试后仍无法通过令牌校验，请更新 Cookie");
+    }
+
     const isFull = pathOrUrl.startsWith("https://");
     const fullUrl = isFull ? pathOrUrl : this.baseUrl + pathOrUrl;
     const qp = new URLSearchParams({
@@ -70,26 +148,41 @@ export class TeraboxDriver extends CloudBase {
     });
     const headers: Record<string, string> = await this.hdrs();
     if (contentType) headers["Content-Type"] = contentType;
-    const r = await fetch(`${fullUrl}?${qp.toString()}`, { method, headers, body: body as any });
+
+    let r: Response;
+    try {
+      r = await fetch(`${fullUrl}?${qp.toString()}`, { method, headers, body: body as any });
+    } catch (e) {
+      throw new Error(`terabox: 网络请求失败 ${e instanceof Error ? e.message : String(e)}`);
+    }
+
     const text = await r.text();
     let json: any;
     try {
       json = JSON.parse(text);
     } catch {
-      json = {};
+      // 上游返回 HTML（通常是被风控挡了登录页）时，原实现静默当成 {}，
+      // 于是 errno===undefined，列表返回空 —— 用户看到「文件夹是空的」而不是错误提示。
+      if (!r.ok) throw new Error(`terabox: 上游返回 ${r.status}`);
+      throw new Error("terabox: 上游返回了非 JSON 响应（Cookie 可能已失效）");
     }
+
     const errno = json.errno;
     if (errno === 4000023 || errno === 450016) {
       await this.resetJsToken();
-      return this.apiRequest(method, pathOrUrl, params, body, contentType);
+      await this.saveSession();
+      return this.apiRequest(method, pathOrUrl, params, body, contentType, depth + 1);
     }
     if (errno === -6) {
       const prefix = r.headers.get("Url-Domain-Prefix");
-      if (prefix) {
+      if (prefix && prefix !== this.urlDomainPrefix) {
         this.urlDomainPrefix = prefix;
         this.baseUrl = `https://${prefix}.terabox.com`;
-        return this.apiRequest(method, pathOrUrl, params, body, contentType);
+        await this.saveSession();
+        return this.apiRequest(method, pathOrUrl, params, body, contentType, depth + 1);
       }
+      // 拿不到新前缀（或前缀没变）就别再转圈了，直接报错
+      throw new Error("terabox: 账号所在区域需要切换域名，但上游未提供目标域名");
     }
     return json;
   }
@@ -97,34 +190,40 @@ export class TeraboxDriver extends CloudBase {
   // 从主页 HTML 提取 jsToken（与 Go resetJsToken 一致）
   private async resetJsToken(): Promise<void> {
     const r = await fetch(this.baseUrl, { headers: await this.hdrs() });
+    if (!r.ok) throw new Error(`terabox: 获取 jsToken 失败（首页 ${r.status}）`);
     const html = await r.text();
     const start = "`function%20fn%28a%29%7Bwindow.jsToken%20%3D%20a%7D%3Bfn%28\"";
     const end = "%22%29`";
     const i = html.indexOf(start);
-    if (i < 0) throw new Error("terabox: 未找到 jsToken");
+    if (i < 0) throw new Error("terabox: 未找到 jsToken，Cookie 可能已失效");
     const j = html.indexOf(end, i + start.length);
-    if (j < 0) throw new Error("terabox: 未找到 jsToken 结尾");
+    if (j < 0) throw new Error("terabox: jsToken 解析失败");
     this.jsToken = html.substring(i + start.length, j);
   }
 
   // ---- 路径列表 ----
   private async getFiles(dir: string): Promise<any[]> {
     const out: any[] = [];
-    let page = 1;
-    for (;;) {
-      const params: Record<string, string> = { dir, page: String(page), num: "100" };
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const params: Record<string, string> = { dir, page: String(page), num: String(PAGE_SIZE) };
       if (this.orderBy) {
         params["order"] = this.orderBy;
         if (this.orderDirection === "desc") params["desc"] = "1";
       }
       const resp = await this.apiRequest("GET", "/api/list", params);
       if (resp.errno === 9000) throw new Error("terabox: 该地区暂不可用");
-      const list: any[] = resp.list || [];
-      if (list.length === 0) break;
+      // errno 非 0 必须抛错。原实现直接读 resp.list（undefined -> []），
+      // 把「Cookie 失效」「目录不存在」统统显示成「空文件夹」。
+      if (resp.errno !== 0 && resp.errno !== undefined) {
+        throw new Error(`terabox: 列目录失败 errno ${resp.errno}`);
+      }
+      const list: any[] = Array.isArray(resp.list) ? resp.list : [];
       out.push(...list);
-      if (list.length < 100) break;
-      page++;
+      if (list.length < PAGE_SIZE) return out;
+      if (out.length >= MAX_ITEMS) break;
     }
+    // 触顶说明目录条目实在太多；截断总比撞 subrequest 上限被掐断要好
+    console.warn(`terabox: 目录 ${dir} 条目超过 ${MAX_ITEMS}，已截断`);
     return out;
   }
 
@@ -190,7 +289,13 @@ export class TeraboxDriver extends CloudBase {
 
   private async genSign(): Promise<string> {
     const resp = await this.apiRequest("GET", "/api/home/info", {});
-    return this.sign(resp.data.sign3, resp.data.sign1);
+    // resp.data 缺失时原实现会抛 "Cannot read properties of undefined"，
+    // 一路冒泡成裸 500，用户完全看不出是网盘凭据的问题。
+    const d = resp?.data;
+    if (!d || typeof d.sign3 !== "string" || typeof d.sign1 !== "string") {
+      throw new Error(`terabox: 获取下载签名失败（errno ${resp?.errno ?? "unknown"}），Cookie 可能已失效`);
+    }
+    return this.sign(d.sign3, d.sign1);
   }
 
   private async linkOfficial(item: FileItem): Promise<string> {
@@ -209,15 +314,20 @@ export class TeraboxDriver extends CloudBase {
     const dlink = resp.dlink[0].dlink;
     const r = await fetch(dlink, { redirect: "manual", headers: { Cookie: this.cookie, "User-Agent": UA } });
     const loc = r.headers.get("location");
-    if (!loc) throw new Error("terabox: dlink 无跳转地址");
+    if (!loc) {
+      // 上游有时直接 200 返回内容（小文件），这时 dlink 本身就能用
+      if (r.status === 200) return dlink;
+      throw new Error(`terabox: 获取直链失败（上游 ${r.status}）`);
+    }
     return loc;
   }
 
   private async linkCrack(item: FileItem): Promise<string> {
-    const params = { target: `["${item.path}"]`, dlink: "1", origin: "dlna" };
+    const params = { target: JSON.stringify([item.path]), dlink: "1", origin: "dlna" };
     const resp = await this.apiRequest("GET", "/api/filemetas", params);
-    if (!resp.info || resp.info.length === 0) throw new Error("terabox: 无下载链接(crack)");
-    return resp.info[0].dlink;
+    const dlink = resp?.info?.[0]?.dlink;
+    if (!dlink) throw new Error(`terabox: 无下载链接（errno ${resp?.errno ?? "unknown"}）`);
+    return dlink;
   }
 
   async getContent(path: string, range?: string): Promise<Response | string> {

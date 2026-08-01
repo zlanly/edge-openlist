@@ -1,0 +1,22 @@
+name = "edge-openlist"
+main = "worker/src/index.ts"
+compatibility_date = "2025-07-01"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./web/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "eol-dev"
+database_id = "local-eol-dev"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "local-kv"
+
+[vars]
+APP_TITLE = "EdgeOpenList"
+JWT_SECRET = "dev-secret-for-local-testing"

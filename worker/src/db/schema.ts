@@ -38,6 +38,8 @@ export async function createMount(
   return Number(info.meta.last_row_id);
 }
 
+const MOUNT_COLUMNS = new Set(["name", "driver", "config_json", "root", "order", "enabled"]);
+
 export async function updateMount(
   db: D1Database,
   id: number,
@@ -47,7 +49,9 @@ export async function updateMount(
   const binds: unknown[] = [];
   for (const [k, v] of Object.entries(patch)) {
     if (v === undefined) continue;
-    sets.push(`${k} = ?`);
+    // 白名单校验：键名会被拼进 SQL，必须杜绝任意标识符注入
+    if (!MOUNT_COLUMNS.has(k)) continue;
+    sets.push(`\`${k}\` = ?`);
     binds.push(v);
   }
   if (!sets.length) return;
@@ -56,7 +60,12 @@ export async function updateMount(
 }
 
 export async function deleteMount(db: D1Database, id: number): Promise<void> {
-  await db.prepare("DELETE FROM mounts WHERE id = ?").bind(id).run();
+  await db.batch([
+    db.prepare("DELETE FROM mounts WHERE id = ?").bind(id),
+    // 挂载没了，它的索引与分享也一并清掉，避免搜索结果指向幽灵挂载
+    db.prepare("DELETE FROM file_cache WHERE mount_id = ?").bind(id),
+    db.prepare("DELETE FROM shares WHERE mount_id = ?").bind(id),
+  ]);
 }
 
 // ---------- 用户 ----------
@@ -91,26 +100,70 @@ export async function updateUserPassword(db: D1Database, id: number, password_ha
   await db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").bind(password_hash, id).run();
 }
 
+// ---------- 应用设置（键值） ----------
+
+export async function getSetting(db: D1Database, key: string): Promise<string | null> {
+  const r = await db.prepare("SELECT value FROM settings WHERE key = ?").bind(key).first<{ value: string }>();
+  return r?.value ?? null;
+}
+
+export async function setSetting(db: D1Database, key: string, value: string): Promise<void> {
+  // INSERT OR IGNORE：并发首启时先写入者胜出，不覆盖已有值
+  await db
+    .prepare("INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES (?, ?, ?)")
+    .bind(key, value, Date.now())
+    .run();
+}
+
 // ---------- 文件缓存 / 搜索索引 ----------
+//
+// 原实现的致命缺陷：file_cache 主键是 (mount_id, path)，但写入时每一行的 path
+// 都绑成了「所在目录」dirPath，于是同一目录的 N 条记录互相 REPLACE，
+// 最终每个目录只剩最后 1 行 —— 搜索功能形同虚设，而且白白消耗 N 次 D1 写配额。
+// 现在：path 存文件真实完整路径，另用 dir 列记录所在目录（供搜索结果跳转）。
+
+/** 目录索引的新鲜期：10 分钟内重复浏览同一目录不再重写，保护 D1 免费档写配额。 */
+const CACHE_TTL_MS = 10 * 60 * 1000;
+/** 单次批量写入的语句上限，避免超大目录撑爆 D1 batch。 */
+const BATCH_LIMIT = 100;
+
+export async function isCacheFresh(db: D1Database, mountId: number, dirPath: string): Promise<boolean> {
+  const r = await db
+    .prepare("SELECT MAX(cached_at) AS t FROM file_cache WHERE mount_id = ? AND dir = ?")
+    .bind(mountId, dirPath)
+    .first<{ t: number | null }>();
+  return !!r?.t && Date.now() - r.t < CACHE_TTL_MS;
+}
 
 export async function upsertFileCache(db: D1Database, mountId: number, items: FileItem[], dirPath: string): Promise<void> {
-  // 先清该目录下的旧记录，再批量写入
   const now = Date.now();
-  await db.prepare("DELETE FROM file_cache WHERE mount_id = ? AND path = ?").bind(mountId, dirPath).run();
+  // 先清该目录下的旧记录（含已被删除的文件），再写入当前快照
+  await db.prepare("DELETE FROM file_cache WHERE mount_id = ? AND dir = ?").bind(mountId, dirPath).run();
+  if (!items.length) return;
   const stmt = db.prepare(
-    "INSERT OR REPLACE INTO file_cache (mount_id, path, name, size, is_dir, modified, etag, cached_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    "INSERT OR REPLACE INTO file_cache (mount_id, path, dir, name, size, is_dir, modified, etag, cached_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
   );
-  const batch = items.map((it) =>
-    stmt.bind(mountId, dirPath, it.name, it.size, it.is_dir ? 1 : 0, it.modified, it.etag ?? null, now)
+  const all = items.map((it) =>
+    stmt.bind(mountId, it.path, dirPath, it.name, it.size, it.is_dir ? 1 : 0, it.modified, it.etag ?? null, now)
   );
-  if (batch.length) await db.batch(batch);
+  for (let i = 0; i < all.length; i += BATCH_LIMIT) {
+    await db.batch(all.slice(i, i + BATCH_LIMIT));
+  }
+}
+
+/** 转义 LIKE 通配符，否则用户搜 "100%" 会匹配到所有文件。 */
+function escapeLike(kw: string): string {
+  return kw.replace(/[\\%_]/g, (c) => "\\" + c);
 }
 
 export async function searchFiles(db: D1Database, kw: string, limit = 200): Promise<any[]> {
   return (
     (await db
-      .prepare("SELECT mount_id, path, name, size, is_dir, modified FROM file_cache WHERE name LIKE ? ORDER BY is_dir DESC, name ASC LIMIT ?")
-      .bind(`%${kw}%`, limit)
+      .prepare(
+        "SELECT mount_id, path, dir, name, size, is_dir, modified FROM file_cache " +
+          "WHERE name LIKE ? ESCAPE '\\' ORDER BY is_dir DESC, name ASC LIMIT ?"
+      )
+      .bind(`%${escapeLike(kw)}%`, limit)
       .all()
     ).results ?? []
   );
@@ -130,6 +183,16 @@ export async function createShare(
 
 export async function getShare(db: D1Database, id: string) {
   return (await db.prepare("SELECT * FROM shares WHERE id = ?").bind(id).first()) ?? null;
+}
+
+export async function listShares(db: D1Database, limit = 100): Promise<any[]> {
+  return (
+    (await db.prepare("SELECT * FROM shares ORDER BY created_at DESC LIMIT ?").bind(limit).all()).results ?? []
+  );
+}
+
+export async function deleteShare(db: D1Database, id: string): Promise<void> {
+  await db.prepare("DELETE FROM shares WHERE id = ?").bind(id).run();
 }
 
 // 仅用于类型导出占位，避免未使用告警

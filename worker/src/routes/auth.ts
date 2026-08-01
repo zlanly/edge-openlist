@@ -1,10 +1,40 @@
 import { Hono, type Context } from "hono";
-import type { AppEnv } from "../types";
+import type { AppEnv, Env } from "../types";
 import { getStore } from "../db/store";
-import { createToken, hashPassword, verifyPassword, extractToken, verifyToken } from "../util/auth";
+import { createToken, hashPassword, verifyPassword } from "../util/auth";
 import { authMiddleware } from "../middleware/auth";
+import { badCredentials, badRequest, forbidden, rateLimited } from "../util/errors";
 
 const auth = new Hono<AppEnv>();
+
+// ---------- 登录限流 ----------
+// 免费档没有 WAF 速率规则可用，登录接口每次都要跑 6 万轮 PBKDF2，
+// 被人拿字典打几百次就能把 Worker 的 CPU 预算耗光 —— 表现为全站「无响应」。
+// 这里用 KV 做一个廉价的滑动计数：同一 IP 15 分钟内最多 10 次失败。
+const LOGIN_WINDOW_S = 15 * 60;
+const LOGIN_MAX_FAILS = 10;
+
+function loginKey(c: Context<AppEnv>): string {
+  const ip = c.req.header("CF-Connecting-IP") || c.req.header("X-Forwarded-For") || "unknown";
+  return `login_fail:${ip}`;
+}
+
+async function assertLoginAllowed(c: Context<AppEnv>): Promise<void> {
+  const kv = c.env.KV;
+  if (!kv || typeof kv.get !== "function") return; // 未绑定 KV 时不阻断登录
+  const n = Number((await kv.get(loginKey(c))) || 0);
+  if (n >= LOGIN_MAX_FAILS) {
+    throw rateLimited("登录失败次数过多，请 15 分钟后再试");
+  }
+}
+
+async function recordLoginFail(env: Env, c: Context<AppEnv>): Promise<void> {
+  const kv = env.KV;
+  if (!kv || typeof kv.put !== "function") return;
+  const key = loginKey(c);
+  const n = Number((await kv.get(key)) || 0) + 1;
+  await kv.put(key, String(n), { expirationTtl: LOGIN_WINDOW_S });
+}
 
 // 首次部署引导页（HTML）：浏览器访问 /setup（或 /api/auth/setup）即创建默认管理员，
 // 账号密码均为 admin；仅当系统尚无任何用户时生效（幂等，重复访问安全）。
@@ -72,11 +102,24 @@ export async function needsSetup(c: Context<AppEnv>) {
 
 // 登录
 auth.post("/login", async (c) => {
-  const { username, password } = await c.req.json<{ username: string; password: string }>();
-  if (!username || !password) return c.json({ error: "缺少用户名或密码" }, 400);
+  let body: { username?: string; password?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    throw badRequest("请求体不是合法 JSON");
+  }
+  const username = (body.username || "").trim();
+  const password = body.password || "";
+  if (!username || !password) throw badRequest("请输入用户名和密码");
+  if (username.length > 64 || password.length > 256) throw badRequest("用户名或密码过长");
+
+  await assertLoginAllowed(c);
+
   const user = await getStore(c.env).getUserByName(username);
   if (!user || !(await verifyPassword(password, user.password_hash))) {
-    return c.json({ error: "用户名或密码错误" }, 401);
+    c.executionCtx?.waitUntil?.(recordLoginFail(c.env, c));
+    // code = bad_credentials，与「会话过期」区分，前端不会因此触发登出重定向
+    throw badCredentials();
   }
   const token = await createToken(c.env, { id: user.id, username: user.username, role: user.role });
   return c.json({ token, user: { id: user.id, username: user.username, role: user.role } });
@@ -89,16 +132,22 @@ auth.get("/setup", setupHandler);
 auth.get("/needs-setup", needsSetup);
 
 // 修改密码（需登录 + 校验原密码）
-auth.post("/change-password", async (c) => {
-  const token = extractToken(c.req.header("Authorization"));
-  const me = token ? await verifyToken(c.env, token) : null;
-  if (!me) return c.json({ error: "未登录或登录已失效" }, 401);
-  const { old_password, new_password } = await c.req.json<{ old_password?: string; new_password?: string }>();
-  if (!new_password || new_password.length < 6) return c.json({ error: "新密码至少 6 位" }, 400);
+auth.post("/change-password", authMiddleware, async (c) => {
+  const me = c.get("user")!;
+  let body: { old_password?: string; new_password?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    throw badRequest("请求体不是合法 JSON");
+  }
+  const { old_password, new_password } = body;
+  if (!new_password || new_password.length < 6) throw badRequest("新密码至少 6 位");
+  if (new_password.length > 256) throw badRequest("新密码过长");
   const store = getStore(c.env);
   const u = await store.getUserByName(me.username);
+  // 原密码错误是 403（权限不足），不是 401 —— 否则前端会把用户踢回登录页
   if (!u || !(await verifyPassword(old_password || "", u.password_hash))) {
-    return c.json({ error: "原密码错误" }, 403);
+    throw forbidden("原密码错误");
   }
   await store.updateUserPassword(u.id, await hashPassword(new_password));
   return c.json({ ok: true });

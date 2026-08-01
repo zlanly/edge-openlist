@@ -1,5 +1,6 @@
 import type { Env, MountRow, FileItem } from "../types";
 import * as D1 from "./schema";
+import { HttpError } from "../util/errors";
 
 // 统一存储接口。本应用强制使用 D1 作为结构化数据存储（用户 / 挂载 / 分享 / 文件索引），
 // 提供强一致与 SQL 搜索能力。部署时 Worker 可先不带任何绑定上传，部署完成后
@@ -27,11 +28,14 @@ export interface Store {
 
   // 文件缓存 / 搜索索引
   upsertFileCache(mountId: number, items: FileItem[], dirPath: string): Promise<void>;
+  isCacheFresh(mountId: number, dirPath: string): Promise<boolean>;
   searchFiles(kw: string, limit?: number): Promise<any[]>;
 
   // 分享
   createShare(data: { id: string; mount_id: number; path: string; password: string | null; expire_at: number | null }): Promise<void>;
   getShare(id: string): Promise<any | null>;
+  listShares(limit?: number): Promise<any[]>;
+  deleteShare(id: string): Promise<void>;
 }
 
 // ---------- D1 实现（委托给 schema.ts） ----------
@@ -73,6 +77,9 @@ class D1Store implements Store {
   upsertFileCache(m: number, items: FileItem[], d: string) {
     return D1.upsertFileCache(this.db, m, items, d);
   }
+  isCacheFresh(m: number, d: string) {
+    return D1.isCacheFresh(this.db, m, d);
+  }
   searchFiles(kw: string, limit?: number) {
     return D1.searchFiles(this.db, kw, limit);
   }
@@ -82,14 +89,22 @@ class D1Store implements Store {
   getShare(id: string) {
     return D1.getShare(this.db, id);
   }
+  listShares(limit?: number) {
+    return D1.listShares(this.db, limit);
+  }
+  deleteShare(id: string) {
+    return D1.deleteShare(this.db, id);
+  }
 }
 
 // 取得存储实现：必须绑定 D1，否则抛出清晰错误引导去控制台添加绑定。
 export function getStore(env: Env): Store {
   if (!env.DB || typeof (env.DB as any).prepare !== "function") {
-    throw new Error(
+    throw new HttpError(
+      503,
       "未检测到 D1 数据库绑定（env.DB）。请到 Cloudflare 控制台为 Worker 添加 D1 数据库绑定（绑定名 DB），" +
-        "并在 wrangler.toml / 部署配置中声明 [[d1_databases]]，然后重新部署。详见 README 部署教程。"
+        "然后重新部署。详见 README 部署教程。",
+      "internal"
     );
   }
   return new D1Store(env.DB);

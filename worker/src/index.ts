@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type { AppEnv, Env, MountRow } from "./types";
+import type { AppEnv, Env } from "./types";
 import auth, { setupHandler } from "./routes/auth";
 import mounts from "./routes/mounts";
 import fs from "./routes/fs";
@@ -10,24 +10,83 @@ import { buildDriver } from "./drivers/factory";
 import { normalizePath, sortItems } from "./drivers";
 import { getStore } from "./db/store";
 import { initDb } from "./db/init";
+import { HttpError, toHttpError } from "./util/errors";
 
 // strict:false 让尾斜杠无关紧要（/api/mounts 与 /api/mounts/ 等价），避免前端带斜杠请求 404
 const app = new Hono<AppEnv>({ strict: false });
 
-// 首次请求时自动建表（D1 自动供给场景下 CLI 迁移可能未执行，保证应用开箱即用）
-app.use("*", async (c, next) => {
+// ---------- 建表（仅 API 路径） ----------
+// 原实现挂在 "*" 上：每个静态资源请求（JS/CSS/图标…）都要 await 一次 initDb，
+// 首屏几十个请求全排在 D1 建表后面 —— 这正是「页面转圈半天没反应」的一大来源。
+// 现在只在 /api/* 与 /dav、/s 上执行，且结果在 isolate 内缓存，只跑一次。
+let dbReady: Promise<void> | null = null;
+function ensureDb(env: Env): Promise<void> {
+  if (!dbReady) {
+    dbReady = initDb(env).catch((e) => {
+      // 建表失败不能永久毒化缓存，否则 D1 短暂抖动后再也不会重试
+      dbReady = null;
+      throw e;
+    });
+  }
+  return dbReady;
+}
+
+app.use("/api/*", async (c, next) => {
   try {
-    await initDb(c.env);
+    await ensureDb(c.env);
   } catch {
-    // 建表失败不阻断静态资源等请求；DB 相关接口会自行报错
+    // 建表失败不直接 500：具体接口访问 D1 时会抛出更精确的错误
   }
   await next();
+});
+app.use("/dav/*", async (c, next) => {
+  try {
+    await ensureDb(c.env);
+  } catch {}
+  await next();
+});
+app.use("/s/*", async (c, next) => {
+  try {
+    await ensureDb(c.env);
+  } catch {}
+  await next();
+});
+
+// ---------- 全局错误处理 ----------
+// 这是修复「莫名退回登录页」与「无响应」的核心闸门：
+//  · 任何未捕获异常都变成结构化 JSON（前端 res.json() 不会再抛 SyntaxError 卡死）
+//  · 驱动/上游抛的错统一为 502 upstream_error，绝不冒充 401
+//  · 只有真正的会话失效才会带 code = "unauthenticated"
+app.onError((err, c) => {
+  const he = err instanceof HttpError ? err : toHttpError(err);
+  if (he.status >= 500) {
+    console.error(`[${c.req.method} ${new URL(c.req.url).pathname}] ${he.code}:`, err);
+  }
+  const wantsJson =
+    c.req.path.startsWith("/api/") || (c.req.header("Accept") || "").includes("application/json");
+  if (!wantsJson) {
+    return c.text(he.message, he.status as any);
+  }
+  return c.json(he.toJSON(), he.status as any);
+});
+
+app.notFound((c) => {
+  if (c.req.path.startsWith("/api/") || c.req.path.startsWith("/dav")) {
+    return c.json({ error: "接口不存在", code: "not_found" }, 404);
+  }
+  // 非 API：交给 SPA 回退
+  return c.env.ASSETS.fetch(c.req.raw);
 });
 
 app.get("/api/health", (c) => c.json({ ok: true, title: c.env.APP_TITLE }));
 
 // 首次部署初始化入口：顶层 /setup 与 /api/auth/setup 均可触达
-app.get("/setup", setupHandler);
+app.get("/setup", async (c) => {
+  try {
+    await ensureDb(c.env);
+  } catch {}
+  return setupHandler(c);
+});
 
 app.route("/api/auth", auth);
 app.route("/api/oauth", oauth);
@@ -37,7 +96,7 @@ app.route("/dav", dav);
 app.route("/s", share);
 
 // /api 未命中 -> JSON 404（不落到 SPA）
-app.all("/api/*", (c) => c.json({ error: "not found" }, 404));
+app.all("/api/*", (c) => c.json({ error: "接口不存在", code: "not_found" }, 404));
 
 // SPA 回退：其余请求交给静态资源（Workers Assets 单页应用模式）
 app.get("*", async (c) => {
@@ -45,23 +104,45 @@ app.get("*", async (c) => {
 });
 
 // ---------- 后台爬取建搜索索引（Cron: 每日 03:13） ----------
+// 免费档护栏：总条目、访问目录数、耗时三重上限，任一触顶即收工。
+// 原实现只有条目上限，遇到「目录极多但每个目录很少文件」的网盘会跑到 CPU 超时被杀，
+// 索引写一半留下脏数据。
 async function crawl(env: Env): Promise<void> {
   const store = getStore(env);
-  const results = await store.listMounts();
-  const MAX_ENTRIES = 4000; // 免费档 CPU 预算保护
-  for (const m of results) {
-    const driver = await buildDriver(env, m);
+  const mountRows = await store.listMounts();
+  const MAX_ENTRIES = 4000; // 免费档 CPU / D1 写配额保护
+  const MAX_DIRS = 500; // 访问目录数上限
+  const DEADLINE = Date.now() + 25_000; // 单次 cron 最长 25s
+
+  for (const m of mountRows) {
+    if (Date.now() > DEADLINE) break;
+    let driver;
+    try {
+      driver = await buildDriver(env, m);
+    } catch (e) {
+      console.error(`crawl: 挂载「${m.name}」驱动初始化失败`, e);
+      continue;
+    }
     const queue: string[] = [normalizePath(m.root || "/")];
+    const seen = new Set<string>(queue);
     let count = 0;
-    while (queue.length && count < MAX_ENTRIES) {
+    let dirs = 0;
+    while (queue.length && count < MAX_ENTRIES && dirs < MAX_DIRS && Date.now() < DEADLINE) {
       const dir = queue.shift() as string;
+      dirs++;
       try {
         const items = sortItems(await driver.list(dir));
         await store.upsertFileCache(m.id, items, dir);
         count += items.length;
-        for (const it of items) if (it.is_dir) queue.push(it.path);
-      } catch {
-        // 单个目录失败跳过
+        for (const it of items) {
+          // 去重：软链/自引用目录会让 BFS 无限循环
+          if (it.is_dir && !seen.has(it.path)) {
+            seen.add(it.path);
+            queue.push(it.path);
+          }
+        }
+      } catch (e) {
+        console.error(`crawl: 目录 ${dir} 读取失败`, e);
       }
     }
   }
@@ -70,6 +151,10 @@ async function crawl(env: Env): Promise<void> {
 export default {
   fetch: app.fetch,
   scheduled: async (_event: ScheduledEvent, env: Env, ctx: ExecutionContext) => {
-    ctx.waitUntil(initDb(env).then(() => crawl(env)));
+    ctx.waitUntil(
+      initDb(env)
+        .then(() => crawl(env))
+        .catch((e) => console.error("scheduled crawl failed", e))
+    );
   },
 };
