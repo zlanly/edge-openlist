@@ -153,6 +153,16 @@ export const api = {
     if (!res.ok) throw new Error((await res.json()).error || "修改失败");
     return res.json();
   },
+  async needsSetup(): Promise<boolean> {
+    try {
+      const res = await fetch("/api/auth/needs-setup");
+      if (!res.ok) return false;
+      const j = await res.json();
+      return !!j.needed;
+    } catch {
+      return false;
+    }
+  },
 };
 
 // 直传文件：根据 upload/init 返回的凭证上传（R2/S3 预签名直传，WebDAV 经 Worker 代理）

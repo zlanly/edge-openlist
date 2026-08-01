@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { AppEnv, Env, MountRow } from "./types";
-import auth from "./routes/auth";
+import auth, { setupHandler } from "./routes/auth";
 import mounts from "./routes/mounts";
 import fs from "./routes/fs";
 import dav from "./routes/dav";
@@ -24,6 +24,9 @@ app.use("*", async (c, next) => {
 });
 
 app.get("/api/health", (c) => c.json({ ok: true, title: c.env.APP_TITLE }));
+
+// 首次部署初始化入口：顶层 /setup 与 /api/auth/setup 均可触达
+app.get("/setup", setupHandler);
 
 app.route("/api/auth", auth);
 app.route("/api/oauth", oauth);

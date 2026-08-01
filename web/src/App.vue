@@ -7,6 +7,7 @@ const user = ref<{ username: string; role: string } | null>(null);
 const loginU = ref("");
 const loginP = ref("");
 const error = ref("");
+const needSetup = ref(false);
 
 // 修改密码
 const showPwd = ref(false);
@@ -255,6 +256,9 @@ onMounted(async () => {
     } catch {
       logout();
     }
+  } else {
+    // 未登录时探测是否需要首次初始化，登录页给出一键初始化入口
+    needSetup.value = await api.needsSetup();
   }
 });
 </script>
@@ -267,6 +271,7 @@ onMounted(async () => {
     <input v-model="loginP" type="password" placeholder="密码" @keyup.enter="doLogin" />
     <button @click="doLogin">登录</button>
     <p v-if="error" class="err">{{ error }}</p>
+    <a v-if="needSetup" class="setup-cta" href="/setup">⚙️ 首次使用？一键初始化管理员（admin/admin）</a>
   </div>
 
   <div v-else class="app">
@@ -407,6 +412,8 @@ onMounted(async () => {
 .login-wrap { width: 320px; margin: 14vh auto; padding: 32px; display: flex; flex-direction: column; gap: 12px; }
 .login-wrap h1 { margin: 0; color: var(--accent); }
 .login-wrap .sub { margin: 0 0 8px; color: var(--text-soft); font-size: 13px; }
+.setup-cta { margin-top: 14px; display: block; padding: 11px 14px; background: var(--accent); color: #fff; border-radius: 12px; text-decoration: none; font-weight: 600; font-size: 13px; }
+.setup-cta:hover { filter: brightness(1.05); }
 .err { color: #e06c5a; font-size: 13px; }
 .ok { color: var(--accent); font-size: 13px; }
 .app { height: 100%; display: flex; flex-direction: column; padding: 16px; gap: 14px; }
