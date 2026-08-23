@@ -86,15 +86,45 @@ onBeforeUnmount(offUploadDone);
 
 // ---------------------------------------------------------------------------
 // 视图 / 排序（持久化，用户不用每次重设）
+// 排序按目录分别记忆（OpenList 行为）：每个目录第一次进入时用全局默认，
+// 一旦手动改过就记住这个目录自己的偏好。
 // ---------------------------------------------------------------------------
 type SortKey = "name" | "size" | "modified";
 const view = ref<"grid" | "list">(readLS("eol_view") === "grid" ? "grid" : "list");
-const sortKey = ref<SortKey>((readLS("eol_sort_key") as SortKey) || "name");
-const sortAsc = ref(readLS("eol_sort_asc") !== "0");
+const sortKey = ref<SortKey>("name");
+const sortAsc = ref(true);
+
+const dirSortKey = () => `eol_dir_sort_${props.mount?.id}:${props.path}`;
+function applySortPref() {
+  try {
+    const per = readLS(dirSortKey());
+    if (per) {
+      const v = JSON.parse(per) as { k?: string; a?: number };
+      if (v && (v.k === "name" || v.k === "size" || v.k === "modified")) {
+        sortKey.value = v.k;
+        sortAsc.value = v.a !== 0;
+        return;
+      }
+    }
+  } catch {
+    // 存坏了就当没有，回退全局默认
+  }
+  sortKey.value = (readLS("eol_sort_key") as SortKey) || "name";
+  sortAsc.value = readLS("eol_sort_asc") !== "0";
+}
+applySortPref();
+
 watch(view, (v) => writeLS("eol_view", v));
+watch(
+  () => [props.mount?.id, props.path] as const,
+  () => applySortPref()
+);
 watch([sortKey, sortAsc], () => {
   writeLS("eol_sort_key", sortKey.value);
   writeLS("eol_sort_asc", sortAsc.value ? "1" : "0");
+  try {
+    writeLS(dirSortKey(), JSON.stringify({ k: sortKey.value, a: sortAsc.value ? 1 : 0 }));
+  } catch {}
 });
 
 const collator = new Intl.Collator("zh-Hans-CN", { numeric: true, sensitivity: "base" });

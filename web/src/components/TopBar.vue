@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, onBeforeUnmount } from "vue";
+import { computed, ref, watch, onMounted, onBeforeUnmount } from "vue";
 import ThemeToggle from "./ui/ThemeToggle.vue";
 import PopMenu from "./ui/PopMenu.vue";
 import type { MenuItem } from "./ui/menu";
@@ -38,6 +38,18 @@ function clearSearch() {
   clearTimeout(timer);
   emit("update:keyword", "");
 }
+
+// OpenList 同款：Ctrl / Cmd + K 聚焦搜索
+const searchInput = ref<HTMLInputElement | null>(null);
+function onGlobalKey(e: KeyboardEvent) {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    searchInput.value?.focus();
+    searchInput.value?.select();
+  }
+}
+onMounted(() => window.addEventListener("keydown", onGlobalKey));
+onBeforeUnmount(() => window.removeEventListener("keydown", onGlobalKey));
 
 const userBtn = ref<HTMLElement | null>(null);
 const menuOpen = ref(false);
@@ -99,6 +111,7 @@ const uploadTitle = computed(() =>
         <path d="m21 21-4.3-4.3M17 10.5a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0Z" />
       </svg>
       <input
+        ref="searchInput"
         v-model="local"
         class="input"
         type="search"
@@ -112,6 +125,7 @@ const uploadTitle = computed(() =>
           <path d="M18 6 6 18M6 6l12 12" />
         </svg>
       </button>
+      <kbd v-else class="kbd" aria-hidden="true">Ctrl K</kbd>
     </div>
 
     <div class="right">
@@ -190,6 +204,21 @@ const uploadTitle = computed(() =>
   pointer-events: none;
 }
 .search .input::-webkit-search-cancel-button { display: none; }
+.kbd {
+  position: absolute;
+  right: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 1px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-faint);
+  font-family: inherit;
+  font-size: 10.5px;
+  pointer-events: none;
+}
+.search .input:focus ~ .kbd { display: none; }
 .clr {
   position: absolute;
   right: 7px;
@@ -267,6 +296,7 @@ const uploadTitle = computed(() =>
   .topbar { padding: 0 10px; gap: 8px; }
   .brand { padding: 6px 4px; }
   .search { max-width: none; }
+  .kbd { display: none; }
   .up-txt { display: none; }
 }
 </style>

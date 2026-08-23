@@ -291,6 +291,8 @@ onBeforeUnmount(() => {
         />
       </main>
     </div>
+
+    <footer class="footer">EdgeOpenList · OpenList 移植版</footer>
   </div>
 
   <!-- 悬浮层 -->
@@ -313,6 +315,13 @@ onBeforeUnmount(() => {
 .shell { height: 100%; display: flex; flex-direction: column; }
 .body { flex: 1; display: flex; min-height: 0; }
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.footer {
+  flex-shrink: 0;
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
 
 .boot {
   height: 100%;
