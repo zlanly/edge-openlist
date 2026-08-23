@@ -310,7 +310,11 @@ export class TeraboxDriver extends CloudBase {
     const parent = parentPath(path);
     const name = basename(path);
     const files = await this.getFiles(parent);
-    const f = files.find((x) => x.server_filename === name);
+    // 上游文件名是 NFD 分解形式（韩文/带音标的名字尤其明显），
+    // 客户端传来的可能是 NFC —— 两种规范化都试，否则「列表里明明有却说不存在」
+    const f =
+      files.find((x) => x.server_filename === name) ||
+      files.find((x) => x.server_filename.normalize("NFC") === name.normalize("NFC"));
     if (!f) throw new Error(`terabox: 不存在 ${path}`);
     return this.toItem(f, parent);
   }
@@ -395,7 +399,11 @@ export class TeraboxDriver extends CloudBase {
   async getContent(path: string, range?: string): Promise<Response | string> {
     const item = await this.get(path);
     const url = this.downloadApi === "crack" ? await this.linkCrack(item) : await this.linkOfficial(item);
-    return fetch(url, { headers: { "User-Agent": UA, ...(range ? { Range: range } : {}) } });
+    // 直链落地页还要校验账号 Cookie，缺了就回 {"errmsg":"need verify", errno:400141}
+    // 并把 JSON 当正文返回。内容是本站代理转发，带上 Cookie 不会外泄。
+    return fetch(url, {
+      headers: { "User-Agent": UA, Cookie: this.cookie, ...(range ? { Range: range } : {}) },
+    });
   }
 
   // ---- 写操作 ----

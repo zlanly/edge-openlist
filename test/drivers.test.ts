@@ -188,6 +188,13 @@ function json(body: any, status = 200) {
   if (u.includes("terabox.com/api/precreate")) return json({ errno: 0, uploadid: "tb-up1", return_type: 1 });
   if (u.includes("terabox.com/rest/2.0/pcs/superfile2")) return json({ md5: tbChunkMd5 });
   if (u.includes("terabox.com/api/create")) return json({ errno: 0 });
+  if (u.includes("terabox.com/api/home/info")) return json({ errno: 0, data: { sign1: "s1", sign3: "s3" } });
+  if (u.includes("terabox.com/api/download")) return json({ errno: 0, dlink: [{ dlink: "https://dl-terabox/file" }] });
+  if (u.startsWith("https://dl-terabox/file")) {
+    const ck = String(((opts.headers as any) || {}).Cookie || "");
+    if (ck.includes("BDUSS")) requests.push("DL-COOKIE-SENT");
+    return new Response("tb-filedata");
+  }
 
   // 首页 HTML：只含备选样式（未编码）的令牌注入，验证多模式提取
   if (u === "https://jp.terabox.com" || u === "https://www.terabox.com") {
@@ -505,6 +512,13 @@ async function main() {
     assert.equal(items.length, 1);
     const sess = kv.store.get("terabox:sess:51") || "";
     assert.ok(sess.includes("tb-home"), "首页提取到的令牌应写入会话缓存");
+  });
+  await test("Terabox 下载直链附带 Cookie（修复 need verify）", async () => {
+    const d = await mk(TeraboxDriver, { cookie: "noBodyToken=1; jsToken=tb-cookie; BDUSS=x" }, 52);
+    requests.length = 0;
+    const res: any = await d.getContent("/t.mp4");
+    assert.equal(await res.text(), "tb-filedata");
+    assert.ok(requests.includes("DL-COOKIE-SENT"), "直链请求必须附带 Cookie，否则上游回 need verify");
   });
   await test("Terabox 上传链路（locateupload→precreate→分片→create）", async () => {
     const d = await mk(TeraboxDriver, { cookie: "BDUSS=x" }, 50);
