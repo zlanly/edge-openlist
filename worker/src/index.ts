@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { AppEnv, Env } from "./types";
-import auth, { setupHandler } from "./routes/auth";
+import auth from "./routes/auth";
 import mounts from "./routes/mounts";
 import fs from "./routes/fs";
 import dav from "./routes/dav";
@@ -74,13 +74,9 @@ app.notFound((c) => {
 
 app.get("/api/health", (c) => c.json({ ok: true, title: c.env.APP_TITLE }));
 
-// 首次部署初始化入口：顶层 /setup 与 /api/auth/setup 均可触达
-app.get("/setup", async (c) => {
-  try {
-    await ensureDb(c.env);
-  } catch {}
-  return setupHandler(c);
-});
+// 首次部署初始化页 /setup 由前端应用自身渲染（SPA 回退兜底），
+// 不再走服务端内嵌脚本页——那在部分浏览器/代理环境下脚本不执行。
+// /api/auth/setup（GET 说明页 + POST 初始化接口）仍然保留。
 
 app.route("/api/auth", auth);
 app.route("/api/oauth", oauth);

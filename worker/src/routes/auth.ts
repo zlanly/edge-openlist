@@ -209,12 +209,13 @@ auth.post("/setup", setupPostHandler);
 //
 
 // 探测是否需要初始化（公开，供登录页判断是否显示「一键初始化」）
+// secretRequired：部署时配置了 BOOTSTRAP_SECRET 则初始化表单需要额外填写密钥
 export async function needsSetup(c: Context<AppEnv>) {
   if (!c.env.DB || typeof (c.env.DB as any).prepare !== "function") {
-    return c.json({ needed: false, reason: "no-d1" });
+    return c.json({ needed: false, secretRequired: false, reason: "no-d1" });
   }
   const store = getStore(c.env);
-  return c.json({ needed: (await store.countUsers()) === 0 });
+  return c.json({ needed: (await store.countUsers()) === 0, secretRequired: Boolean(c.env.BOOTSTRAP_SECRET) });
 }
 
 // 登录

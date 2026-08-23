@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import LoginView from "./components/LoginView.vue";
+import SetupView from "./components/SetupView.vue";
 import TopBar from "./components/TopBar.vue";
 import MountSidebar from "./components/MountSidebar.vue";
 import FileBrowser from "./components/FileBrowser.vue";
@@ -22,6 +23,10 @@ const dialog = useDialog();
 // ---------------------------------------------------------------------------
 // 全局状态
 // ---------------------------------------------------------------------------
+// /setup 是首次部署的初始化页：由应用自身渲染（与登录页同一套加载链路），
+// 不走独立内嵌脚本页——那条路在部分浏览器/代理环境下脚本不执行，表现为「提交没反应」。
+const isSetup = ref(location.pathname.replace(/\/+$/, "") === "/setup");
+
 const booting = ref(true);
 const bootError = ref("");
 const user = ref<UserInfo | null>(null);
@@ -202,7 +207,8 @@ function onMountsChanged() {
 
 onMounted(() => {
   window.addEventListener("popstate", onPopState);
-  void boot();
+  // 初始化页不需要会话恢复
+  if (!isSetup.value) void boot();
 });
 onBeforeUnmount(() => {
   window.removeEventListener("popstate", onPopState);
@@ -211,8 +217,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <!-- 首次部署初始化页（/setup） -->
+  <SetupView v-if="isSetup" @done="isSetup = false" />
+
   <!-- 启动中 -->
-  <div v-if="booting" class="boot">
+  <div v-else-if="booting" class="boot">
     <span class="spin" aria-hidden="true" />
     <p>正在连接…</p>
   </div>
