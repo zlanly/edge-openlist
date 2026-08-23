@@ -36,8 +36,7 @@ async function recordLoginFail(env: Env, c: Context<AppEnv>): Promise<void> {
   await kv.put(key, String(n), { expirationTtl: LOGIN_WINDOW_S });
 }
 
-// 首次部署引导页（HTML）：浏览器访问 /setup（或 /api/auth/setup）即创建默认管理员，
-// 账号密码均为 admin；仅当系统尚无任何用户时生效（幂等，重复访问安全）。
+// 首次部署引导页（HTML）。初始化不会自动创建固定凭据，必须由部署者通过受保护的 POST 接口完成。
 function setupPage(title: string, bodyHtml: string): string {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -62,15 +61,14 @@ function html(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "Content-Type": "text/html; charset=utf-8" } });
 }
 
-// 首次部署引导：创建默认管理员（仅当无任何用户时）。浏览器访问 /setup 触发。
-// 若尚未绑定 D1，返回清晰 HTML 引导去控制台加 DB，而不是裸抛错。
+// 初始化说明页：GET 请求只提供部署指引，绝不创建固定账号。
 export async function setupHandler(c: Context<AppEnv>) {
   if (!c.env.DB || typeof (c.env.DB as any).prepare !== "function") {
     return html(
       setupPage(
         "尚未绑定 D1",
         `<p>检测到本 Worker <b>未绑定 D1 数据库</b>，无法初始化管理员。</p>
-         <p>请到 Cloudflare 控制台：<br/><code>Worker → Settings → Bindings → Add → D1（绑定名 DB）</code><br/>保存后会自动重新部署，然后重新访问本页面即可。</p>
+         <p>请先绑定名为 <code>DB</code> 的 D1 数据库，再配置 <code>BOOTSTRAP_SECRET</code>。</p>
          <a class="btn" href="/">返回首页</a>`
       )
     );
@@ -79,17 +77,58 @@ export async function setupHandler(c: Context<AppEnv>) {
   if (await store.countUsers() > 0) {
     return html(setupPage("已完成初始化", `<p>系统已存在管理员账号，请直接 <a href="/">登录</a>。</p>`));
   }
-  await store.createUser("admin", await hashPassword("admin"), "admin");
   return html(
     setupPage(
-      "初始化完成",
-      `<p>管理员账号已创建：</p>
-       <p class="cred">用户名 <b>admin</b> ／ 密码 <b>admin</b></p>
-       <p class="warn">⚠️ 默认密码过于简单，请登录后尽快到后台修改。</p>
-       <a class="btn" href="/">前往登录</a>`
-    )
+      "等待初始化",
+      `<p>系统尚未创建管理员账号。</p>
+       <p>请由部署者配置一次性 <code>BOOTSTRAP_SECRET</code>，然后使用 POST 请求提交自定义用户名和强密码。</p>
+       <p class="warn">不会自动生成或展示默认密码。</p>`
+    ),
+    409
   );
 }
+
+function constantTimeEqual(a: string, b: string): boolean {
+  const aa = new TextEncoder().encode(a);
+  const bb = new TextEncoder().encode(b);
+  let diff = aa.length ^ bb.length;
+  const n = Math.max(aa.length, bb.length);
+  for (let i = 0; i < n; i++) diff |= (aa[i % Math.max(aa.length, 1)] ?? 0) ^ (bb[i % Math.max(bb.length, 1)] ?? 0);
+  return diff === 0;
+}
+
+export async function setupPostHandler(c: Context<AppEnv>) {
+  if (!c.env.DB || typeof (c.env.DB as any).prepare !== "function") throw badRequest("尚未绑定 D1 数据库");
+  const secret = c.env.BOOTSTRAP_SECRET || "";
+  if (!secret) throw forbidden("未配置初始化密钥");
+  let body: { username?: string; password?: string; bootstrapSecret?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    throw badRequest("请求体不是合法 JSON");
+  }
+  const username = (body.username || "").trim();
+  const password = body.password || "";
+  if (!constantTimeEqual(body.bootstrapSecret || "", secret)) throw forbidden("初始化密钥错误");
+  if (!username || username.length > 64 || password.length < 12 || password.length > 256) {
+    throw badRequest("用户名不能为空，密码长度必须为 12 至 256 位");
+  }
+  const store = getStore(c.env);
+  if (await store.countUsers() > 0) throw forbidden("系统已经完成初始化");
+  try {
+    await store.createUser(username, await hashPassword(password), "admin");
+  } catch {
+    if (await store.countUsers() > 0) throw forbidden("系统已经完成初始化");
+    throw new Error("初始化管理员失败");
+  }
+  return c.json({ ok: true }, 201);
+}
+
+// 兼容旧路径，但 GET 仅显示说明页；真正初始化必须使用受保护 POST。
+
+auth.post("/setup", setupPostHandler);
+
+//
 
 // 探测是否需要初始化（公开，供登录页判断是否显示「一键初始化」）
 export async function needsSetup(c: Context<AppEnv>) {

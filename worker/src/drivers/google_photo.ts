@@ -16,7 +16,8 @@ export class GooglePhotoDriver extends CloudBase {
   private accessToken = "";
 
   private cfgStr(k: string): string {
-    return (this.cfg as Record<string, unknown>)[k] as string;
+    const value = (this.cfg as Record<string, unknown>)[k];
+    return value == null ? "" : String(value);
   }
 
   private async ensureToken(): Promise<string> {
@@ -26,7 +27,8 @@ export class GooglePhotoDriver extends CloudBase {
       t = await this.refreshToken();
       await saveTokens(this.env.KV, this.mountId, t);
     }
-    this.accessToken = t!.access_token;
+    if (!t?.access_token) throw new Error("google_photo 缺少有效访问令牌");
+    this.accessToken = t.access_token;
     return this.accessToken;
   }
 
@@ -57,28 +59,36 @@ export class GooglePhotoDriver extends CloudBase {
   }
 
   private async request<T>(url: string, method: string, query?: Record<string, string>): Promise<T> {
-    let extra: Record<string, string> = { "Accept-Encoding": "gzip" };
-    let j = await this.jsonReq<T>(url, method, query, extra);
-    if ((j as any)?.error?.code === 401) {
-      // 重新刷新并复试试一次
-      const t = await this.refreshToken();
-      await saveTokens(this.env.KV, this.mountId, t);
-      this.accessToken = t.access_token;
-      j = await this.jsonReq<T>(url, method, query, extra);
+    let result = await this.jsonReq<T>(url, method, query);
+    if ((result as any)?.error?.code === 401) {
+      const token = await this.refreshToken();
+      await saveTokens(this.env.KV, this.mountId, token);
+      this.accessToken = token.access_token;
+      result = await this.jsonReq<T>(url, method, query);
     }
-    if ((j as any)?.error?.code) throw new Error(`google_photo: ${(j as any).error.message}`);
-    return j;
+    const error = (result as any)?.error;
+    if (error?.code) throw new Error(`google_photo ${error.code}: ${error.message || "请求失败"}`);
+    return result as T;
   }
 
-  private async jsonReq<T>(url: string, method: string, query: Record<string, string> | undefined, extra: Record<string, string>): Promise<any> {
-    const u = new URL(url);
-    if (query) for (const [k, v] of Object.entries(query)) if (v) u.searchParams.set(k, v);
-    const r = await fetch(u.toString(), {
-      method,
-      headers: { ...(await this.hdrs()), ...extra },
-    });
-    if (!r.ok) throw new Error(`google_photo ${r.status}: ${await r.text().catch(() => "")}`);
-    return (await r.json()) as T;
+  private async jsonReq<T>(url: string, method: string, query?: Record<string, string>): Promise<T | { error: { code: number; message: string } }> {
+    const requestUrl = new URL(url);
+    const params = { ...(query || {}) };
+    const headers: Record<string, string> = { ...(await this.hdrs()), "Accept-Encoding": "gzip" };
+    let body: string | undefined;
+    if (method === "GET") {
+      for (const [key, value] of Object.entries(params)) if (value) requestUrl.searchParams.set(key, value);
+    } else {
+      if (params.fields) requestUrl.searchParams.set("fields", params.fields);
+      delete params.fields;
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify(params);
+    }
+    const response = await fetch(requestUrl.toString(), { method, headers, body });
+    if (!response.ok) {
+      return { error: { code: response.status, message: await response.text().catch(() => "") } };
+    }
+    return (await response.json()) as T;
   }
 
   // 将虚拟路径映射为 OpenList 的 fetch id
@@ -92,7 +102,7 @@ export class GooglePhotoDriver extends CloudBase {
   private fileToObj(f: any): FileItem {
     const hasMeta = f.mediaMetadata && Object.keys(f.mediaMetadata).length > 0;
     return {
-      name: hasMeta ? f.fileName : f.title,
+      name: hasMeta ? f.filename : f.title,
       path: "", // 由调用方填充
       is_dir: !hasMeta,
       size: 0,
@@ -145,7 +155,7 @@ export class GooglePhotoDriver extends CloudBase {
   async get(path: string): Promise<FileItem> {
     const parent = parentPath(path);
     const items = await this.getFiles(this.idOf(parent));
-    const o = items.find((i) => (i.fileName || i.title) === basename(path)) || items.find((i) => i.id === basename(path));
+    const o = items.find((i) => (i.filename || i.title) === basename(path)) || items.find((i) => i.id === basename(path));
     if (!o) throw new Error("not found: " + path);
     const obj = this.fileToObj(o);
     obj.path = path;
@@ -155,7 +165,7 @@ export class GooglePhotoDriver extends CloudBase {
   async getContent(path: string, range?: string): Promise<Response | string> {
     const parent = parentPath(path);
     const items = await this.getFiles(this.idOf(parent));
-    const o = items.find((i) => (i.fileName || i.title) === basename(path)) || items.find((i) => i.id === basename(path));
+    const o = items.find((i) => (i.filename || i.title) === basename(path)) || items.find((i) => i.id === basename(path));
     if (!o) throw new Error("not found: " + path);
     const media: any = await this.request<any>(`${API}/mediaItems/${o.id}`, "GET", { fields: "mediaMetadata,baseUrl,mimeType" });
     let url = media.baseUrl;
@@ -163,7 +173,11 @@ export class GooglePhotoDriver extends CloudBase {
     else if (media.mimeType?.includes("video/")) url += "=dv";
     const h: Record<string, string> = {};
     if (range) h["Range"] = range;
-    return fetch(url, { headers: h });
+    const response = await fetch(url, { headers: h });
+    if (!response.ok && response.status !== 206) {
+      throw new Error(`google_photo 下载失败 ${response.status}`);
+    }
+    return response;
   }
 
   // Google 相册只读（meta.go NoUpload:true）

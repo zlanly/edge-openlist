@@ -68,14 +68,16 @@ export class Open123Driver extends CloudBase {
     return { authorization: "Bearer " + (await this.ensureToken()), platform: "open_platform", "Content-Type": "application/json" };
   }
 
-  private async api<T>(pathname: string, params: Record<string, string>, method = "GET", body?: unknown): Promise<T> {
+  private async api<T>(pathname: string, params: Record<string, string>, method = "GET", body?: unknown, retried = false): Promise<T> {
     const h = await this.hdrs();
     const url = params && method === "GET" ? `${API}${pathname}?${new URLSearchParams(params).toString()}` : `${API}${pathname}`;
     const r = await fetch(url, { method, headers: h, body: body ? JSON.stringify(body) : undefined });
     const j = (await r.json()) as any;
     if (j.code === 401) {
+      if (retried) throw new Error(`123_open: ${j.message || "认证失败"}`);
+      this.accessToken = "";
       this.expiredAt = 0;
-      return this.api<T>(pathname, params, method, body);
+      return this.api<T>(pathname, params, method, body, true);
     }
     if (j.code !== 0) throw new Error(`123_open: ${j.message}`);
     return j as T;

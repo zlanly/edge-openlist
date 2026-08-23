@@ -104,11 +104,8 @@ export class Cloud189TVDriver extends CloudBase {
     const headers = appKey ? await this.appKeySig(url) : {};
     const r = await fetch(url, { headers });
     const text = await r.text();
-    try {
-      return JSON.parse(text);
-    } catch {
-      return text;
-    }
+    if (!r.ok) throw new Error(`189tv HTTP ${r.status}: ${text.slice(0, 400)}`);
+    try { return JSON.parse(text); } catch { throw new Error(`189tv 返回格式错误: ${text.slice(0, 200)}`); }
   }
 
   private async apiGet(url: string, q: Record<string, string>, fam: boolean): Promise<any> {
@@ -117,13 +114,10 @@ export class Cloud189TVDriver extends CloudBase {
     const headers = await this.sessionSig(u, t, fam);
     const r = await fetch(u, { headers });
     const text = await r.text();
-    try {
-      const j = JSON.parse(text);
-      if (j.res_code && j.res_code !== 0 && String(j.res_code) !== "0") throw new Error(`189tv err ${j.res_code}: ${j.res_message}`);
-      return j;
-    } catch {
-      return text;
-    }
+    if (!r.ok) throw new Error(`189tv HTTP ${r.status}: ${text.slice(0, 400)}`);
+    let j: any; try { j = JSON.parse(text); } catch { throw new Error(`189tv 返回格式错误: ${text.slice(0, 200)}`); }
+    if (j.res_code != null && String(j.res_code) !== "0") throw new Error(`189tv err ${j.res_code}: ${j.res_message}`);
+    return j;
   }
 
   private async apiPost(url: string, form: Record<string, string>, fam: boolean): Promise<any> {
@@ -132,13 +126,10 @@ export class Cloud189TVDriver extends CloudBase {
     const headers = await this.sessionSig(u, t, fam);
     const r = await fetch(u, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", ...headers }, body: new URLSearchParams(form).toString() });
     const text = await r.text();
-    try {
-      const j = JSON.parse(text);
-      if (j.res_code && j.res_code !== 0 && String(j.res_code) !== "0") throw new Error(`189tv err ${j.res_code}: ${j.res_message}`);
-      return j;
-    } catch {
-      return text;
-    }
+    if (!r.ok) throw new Error(`189tv HTTP ${r.status}: ${text.slice(0, 400)}`);
+    let j: any; try { j = JSON.parse(text); } catch { throw new Error(`189tv 返回格式错误: ${text.slice(0, 200)}`); }
+    if (j.res_code != null && String(j.res_code) !== "0") throw new Error(`189tv err ${j.res_code}: ${j.res_message}`);
+    return j;
   }
 
   private async apiPrefix(fam: boolean): Promise<string> {
@@ -155,13 +146,18 @@ export class Cloud189TVDriver extends CloudBase {
     const fam = this.isFamily();
     const folderId = path === "/" ? "-11" : await this.resolveId(path);
     const prefix = await this.apiPrefix(fam);
-    const j: any = await this.apiGet(`${prefix}/listFiles.action`, {
-      folderId, fileType: "0", mediaAttr: "0", iconOption: "5", pageNum: "1", pageSize: "130",
-      ...(fam ? { familyId: this.cfgStr("familyId"), orderBy: "1", descending: "false" } : { recursive: "0", orderBy: "filename", descending: "false" }),
-    }, fam);
     const out: FileItem[] = [];
-    for (const f of j?.fileListAO?.folderList || []) out.push({ name: f.name, path: joinPath(path, f.name), is_dir: true, size: 0, modified: Date.parse(f.lastOpTime) || 0, etag: String(f.id) });
-    for (const f of j?.fileListAO?.fileList || []) out.push({ name: f.name, path: joinPath(path, f.name), is_dir: false, size: Number(f.size || 0), modified: Date.parse(f.lastOpTime) || 0, etag: String(f.id) });
+    for (let page = 1; ; page++) {
+      const j: any = await this.apiGet(`${prefix}/listFiles.action`, {
+        folderId, fileType: "0", mediaAttr: "0", iconOption: "5", pageNum: String(page), pageSize: "130",
+        ...(fam ? { familyId: this.cfgStr("familyId"), orderBy: "1", descending: "false" } : { recursive: "0", orderBy: "filename", descending: "false" }),
+      }, fam);
+      const folders = j?.fileListAO?.folderList || [], files = j?.fileListAO?.fileList || [];
+      for (const f of folders) out.push({ name: f.name, path: joinPath(path, f.name), is_dir: true, size: 0, modified: Date.parse(f.lastOpTime) || 0, etag: String(f.id) });
+      for (const f of files) out.push({ name: f.name, path: joinPath(path, f.name), is_dir: false, size: Number(f.size || 0), modified: Date.parse(f.lastOpTime) || 0, etag: String(f.id) });
+      const total = Number(j?.fileListAO?.total ?? j?.total ?? NaN);
+      if (!folders.length && !files.length || folders.length + files.length < 130 || (Number.isFinite(total) && out.length >= total)) break;
+    }
     return out;
   }
 
@@ -210,10 +206,13 @@ export class Cloud189TVDriver extends CloudBase {
     }, fam);
   }
 
-  private async createBatchTask(type: string, taskInfos: any[]): Promise<void> {
+  private async createBatchTask(type: string, taskInfos: any[], targetFolderId?: string): Promise<void> {
     const fam = this.isFamily();
     await this.apiPost(`${ApiUrl}/batch/createBatchTask.action`, {
-      type, taskInfos: JSON.stringify(taskInfos), ...(fam ? { familyId: this.cfgStr("familyId") } : {}),
+      type,
+      taskInfos: JSON.stringify(taskInfos),
+      ...(targetFolderId ? { targetFolderId } : {}),
+      ...(fam ? { familyId: this.cfgStr("familyId") } : {}),
     }, fam);
   }
 
@@ -232,7 +231,8 @@ export class Cloud189TVDriver extends CloudBase {
   }
   async move(from: string, to: string): Promise<void> {
     const it = await this.get(from);
-    await this.createBatchTask("MOVE", [{ fileId: it.etag, fileName: basename(from), isFolder: it.is_dir ? 1 : 0 }]);
+    const destId = parentPath(to) === "/" ? "-11" : await this.resolveId(parentPath(to));
+    await this.createBatchTask("MOVE", [{ fileId: it.etag, fileName: basename(from), isFolder: it.is_dir ? 1 : 0 }], destId);
   }
 }
 

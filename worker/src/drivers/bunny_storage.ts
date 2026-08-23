@@ -57,7 +57,7 @@ export class BunnyStorageDriver extends CloudBase {
     if (clean === "" || clean === "/") {
       return u + "/";
     }
-    u += "/" + clean.replace(/^\/+/, "");
+    u += "/" + clean.replace(/^\/+/, "").split("/").map(encodeURIComponent).join("/");
     if (dir && !u.endsWith("/")) u += "/";
     return u;
   }
@@ -118,13 +118,14 @@ export class BunnyStorageDriver extends CloudBase {
     return { uploadUrl: url, method: "PUT", headers: { AccessKey: this.accessKey } };
   }
 
-  async putContent(path: string, body: ReadableStream, _ct?: string, size = 0): Promise<void> {
+  async putContent(path: string, body: ReadableStream, _ct?: string, size?: number): Promise<void> {
     const url = this.storageURL(path, false);
-    const r = await fetch(url, {
-      method: "PUT",
-      headers: { AccessKey: this.accessKey, "Content-Type": _ct || "application/octet-stream", "Content-Length": String(size) },
-      body,
-    });
+    const headers: Record<string, string> = {
+      AccessKey: this.accessKey,
+      "Content-Type": _ct || "application/octet-stream",
+    };
+    if (size !== undefined) headers["Content-Length"] = String(size);
+    const r = await fetch(url, { method: "PUT", headers, body });
     if (!r.ok) throw new Error(`Bunny upload 失败: ${r.status}`);
   }
 
@@ -139,6 +140,8 @@ export class BunnyStorageDriver extends CloudBase {
   }
 
   async remove(path: string): Promise<void> {
+    const item = await this.get(path);
+    if (item.is_dir) throw new Error("Bunny 不支持目录删除");
     const url = this.storageURL(path, false);
     const r = await fetch(url, { method: "DELETE", headers: { AccessKey: this.accessKey } });
     if (!r.ok && r.status !== 404) throw new Error(`Bunny remove 失败: ${r.status}`);
@@ -149,10 +152,12 @@ export class BunnyStorageDriver extends CloudBase {
   }
 
   async move(from: string, to: string): Promise<void> {
-    // Bunny 无服务端 rename/copy，依源流推到目标（Worker 内流式转发，不整缓冲）
+    const item = await this.get(from);
+    if (item.is_dir) throw new Error("Bunny 不支持目录移动");
+    // Bunny 无服务端 rename/copy，依源流推到目标（Worker 内流式转发，不整缓冲）。
     const src = await this.getContent(from);
-    const stream: ReadableStream = typeof src === "string" ? await (await fetch(src)).body! : src.body!;
-    await this.putContent(to, stream);
+    const stream: ReadableStream = typeof src === "string" ? (await fetch(src)).body! : src.body!;
+    await this.putContent(to, stream, undefined, item.size);
     await this.remove(from);
   }
 

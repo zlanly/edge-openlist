@@ -48,7 +48,7 @@ export class AzureBlobDriver extends CloudBase {
 
   private b64dec(s: string): Uint8Array {
     if (!s) return new Uint8Array(0);
-    const bin = atob(s);
+    const bin = atob(s.replace(/-/g, "+").replace(/_/g, "/"));
     const a = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
     return a;
@@ -61,7 +61,11 @@ export class AzureBlobDriver extends CloudBase {
 
   private blobURL(path: string): string {
     const k = this.objPath(path);
-    return `${this.base}/${this.container}/${k}`;
+    return `${this.base}/${encodeURIComponent(this.container)}/${encodeBlobKey(k)}`;
+  }
+
+  private keyURL(key: string): string {
+    return `${this.base}/${encodeURIComponent(this.container)}/${encodeBlobKey(key)}`;
   }
 
   // SharedKey 签名
@@ -75,6 +79,7 @@ export class AzureBlobDriver extends CloudBase {
       "x-ms-version": API_VER,
       "x-ms-date": new Date().toUTCString(),
     };
+    if (opts.bodyLen !== undefined) headers["Content-Length"] = String(opts.bodyLen);
     if (opts.contentType) headers["Content-Type"] = opts.contentType;
     if (opts.copySource) headers["x-ms-copy-source"] = opts.copySource;
     if (opts.extra) Object.assign(headers, opts.extra);
@@ -83,10 +88,14 @@ export class AzureBlobDriver extends CloudBase {
       .sort()
       .map((h) => `${h.toLowerCase()}:${headers[h].trim()}`)
       .join("\n");
-    const canonicalizedResource = `/${this.account}${u.pathname}`;
+    let canonicalizedResource = `/${this.account}${u.pathname}`;
+    const queryEntries = [...u.searchParams.entries()]
+      .map(([name, value]) => [name.toLowerCase(), value] as const)
+      .sort(([a], [b]) => a.localeCompare(b));
+    for (const [name, value] of queryEntries) canonicalizedResource += `\n${name}:${decodeURIComponent(value)}`;
     const stringToSign = [
       method,
-      opts.bodyLen !== undefined ? String(opts.bodyLen) : "",
+      opts.bodyLen !== undefined && opts.bodyLen > 0 ? String(opts.bodyLen) : "",
       "", // content-encoding
       "", // content-language
       "", // content-md5
@@ -100,37 +109,49 @@ export class AzureBlobDriver extends CloudBase {
       msHeaders,
       canonicalizedResource,
     ].join("\n");
-    const sig = b64url(await hmacSha256(this.keyBytes, stringToSign));
+    const sig = b64std(await hmacSha256(this.keyBytes, stringToSign));
     headers["Authorization"] = `SharedKey ${this.account}:${sig}`;
     return headers;
   }
 
   async list(path: string): Promise<FileItem[]> {
     const prefix = this.objPath(path);
-    let p = prefix === "" ? "" : prefix.endsWith("/") ? prefix : prefix + "/";
-    const url = `${this.base}/${this.container}?restype=container&comp=list&prefix=${encodeURIComponent(p)}&delimiter=/`;
-    const h = await this.sign("GET", url, { extra: { "Content-Type": "application/xml" } });
-    const r = await fetch(url, { headers: h });
-    if (!r.ok) throw new Error(`Azure list 失败: ${r.status}`);
-    const xml = await r.text();
+    const p = prefix === "" ? "" : prefix.endsWith("/") ? prefix : prefix + "/";
     const items: FileItem[] = [];
-    const dirRe = /<BlobPrefix><Name>([^<]+)<\/Name><\/BlobPrefix>/g;
-    let m: RegExpExecArray | null;
-    while ((m = dirRe.exec(xml))) {
-      const name = m[1].slice(p.length).replace(/\/$/, "");
-      if (name) items.push({ name, path: joinPath(path, name), is_dir: true, size: 0, modified: 0 });
-    }
-    const blobRe = /<Blob><Name>([^<]+)<\/Name><Properties>([\s\S]*?)<\/Properties>/g;
-    while ((m = blobRe.exec(xml))) {
-      const full = m[1];
-      if (full.endsWith("/")) continue;
-      const name = full.slice(p.length);
-      if (!name) continue;
-      const prop = m[2];
-      const size = Number((prop.match(/<Content-Length>(\d+)<\/Content-Length>/) || [])[1] || 0);
-      const lm = (prop.match(/<Last-Modified>([^<]+)<\/Last-Modified>/) || [])[1];
-      items.push({ name, path: joinPath(path, name), is_dir: false, size, modified: lm ? Date.parse(lm) : 0 });
-    }
+    const seen = new Set<string>();
+    let marker = "";
+    do {
+      const query = new URLSearchParams({ restype: "container", comp: "list", prefix: p, delimiter: "/" });
+      if (marker) query.set("marker", marker);
+      const url = `${this.base}/${this.container}?${query.toString()}`;
+      const h = await this.sign("GET", url, { extra: { "Content-Type": "application/xml" } });
+      const r = await fetch(url, { headers: h });
+      if (!r.ok) throw new Error(`Azure list 失败: ${r.status}`);
+      const xml = await r.text();
+      const dirRe = /<BlobPrefix><Name>([^<]+)<\/Name><\/BlobPrefix>/g;
+      let m: RegExpExecArray | null;
+      while ((m = dirRe.exec(xml))) {
+        const full = xmlUnescape(m[1]);
+        const name = full.slice(p.length).replace(/\/$/, "");
+        if (name && !seen.has(`d:${name}`)) {
+          seen.add(`d:${name}`);
+          items.push({ name, path: joinPath(path, name), is_dir: true, size: 0, modified: 0 });
+        }
+      }
+      const blobRe = /<Blob><Name>([^<]+)<\/Name><Properties>([\s\S]*?)<\/Properties>/g;
+      while ((m = blobRe.exec(xml))) {
+        const full = xmlUnescape(m[1]);
+        if (full.endsWith("/")) continue;
+        const name = full.slice(p.length);
+        if (!name || seen.has(`f:${name}`)) continue;
+        const prop = m[2];
+        const size = Number((prop.match(/<Content-Length>(\d+)<\/Content-Length>/) || [])[1] || 0);
+        const lm = (prop.match(/<Last-Modified>([^<]+)<\/Last-Modified>/) || [])[1];
+        seen.add(`f:${name}`);
+        items.push({ name, path: joinPath(path, name), is_dir: false, size, modified: lm ? Date.parse(lm) : 0 });
+      }
+      marker = xmlUnescape((xml.match(/<NextMarker>([^<]*)<\/NextMarker>/) || [])[1] || "");
+    } while (marker);
     return items;
   }
 
@@ -154,7 +175,11 @@ export class AzureBlobDriver extends CloudBase {
 
   async createUpload(path: string, _size: number): Promise<UploadSession> {
     const blob = this.objPath(path);
-    return { uploadUrl: await this.blobSAS(blob, "w"), method: "PUT" };
+    return {
+      uploadUrl: await this.blobSAS(blob, "w"),
+      method: "PUT",
+      headers: { "x-ms-blob-type": "BlockBlob" },
+    };
   }
 
   async putContent(path: string, body: ReadableStream, _ct?: string, size = 0): Promise<void> {
@@ -171,7 +196,7 @@ export class AzureBlobDriver extends CloudBase {
   async mkdir(path: string): Promise<void> {
     let dir = this.objPath(path);
     if (dir && !dir.endsWith("/")) dir += "/";
-    const url = `${this.base}/${this.container}/${dir}`;
+    const url = this.keyURL(dir);
     const h = await this.sign("PUT", url, {
       bodyLen: 0,
       contentType: "application/octet-stream",
@@ -185,17 +210,26 @@ export class AzureBlobDriver extends CloudBase {
     const item = await this.get(path).catch(() => null);
     if (item && item.is_dir) {
       const prefix = this.objPath(path).replace(/\/$/, "") + "/";
-      const url = `${this.base}/${this.container}?restype=container&comp=list&prefix=${encodeURIComponent(prefix)}`;
-      const h = await this.sign("GET", url, { extra: { "Content-Type": "application/xml" } });
-      const r = await fetch(url, { headers: h });
-      const xml = await r.text();
-      const re = /<Blob><Name>([^<]+)<\/Name>/g;
-      let m: RegExpExecArray | null;
-      const names: string[] = [];
-      while ((m = re.exec(xml))) names.push(m[1]);
+        const names: string[] = [];
+      let marker = "";
+      do {
+        const query = new URLSearchParams({ restype: "container", comp: "list", prefix });
+        if (marker) query.set("marker", marker);
+        const url = `${this.base}/${this.container}?${query.toString()}`;
+        const h = await this.sign("GET", url, { extra: { "Content-Type": "application/xml" } });
+        const r = await fetch(url, { headers: h });
+        if (!r.ok) throw new Error(`Azure list 删除目标失败: ${r.status}`);
+        const xml = await r.text();
+        const re = /<Blob><Name>([^<]+)<\/Name>/g;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(xml))) names.push(xmlUnescape(m[1]));
+        marker = xmlUnescape((xml.match(/<NextMarker>([^<]*)<\/NextMarker>/) || [])[1] || "");
+      } while (marker);
       for (const n of names) {
-        const del = await this.sign("DELETE", `${this.base}/${this.container}/${n}`, { extra: { "Content-Type": "application/xml" } });
-        await fetch(`${this.base}/${this.container}/${n}`, { method: "DELETE", headers: del });
+        const target = this.keyURL(n);
+        const del = await this.sign("DELETE", target, { extra: { "Content-Type": "application/xml" } });
+        const response = await fetch(target, { method: "DELETE", headers: del });
+        if (!response.ok && response.status !== 404) throw new Error(`Azure 删除失败: ${response.status}`);
       }
       return;
     }
@@ -209,9 +243,7 @@ export class AzureBlobDriver extends CloudBase {
     await this.move(from, to);
   }
 
-  async move(from: string, to: string): Promise<void> {
-    const src = this.blobURL(from);
-    const dst = this.blobURL(to);
+  private async copyBlob(src: string, dst: string): Promise<void> {
     const copyH = await this.sign("PUT", dst, {
       contentType: "application/octet-stream",
       copySource: src,
@@ -219,8 +251,66 @@ export class AzureBlobDriver extends CloudBase {
     });
     const cp = await fetch(dst, { method: "PUT", headers: copyH });
     if (!cp.ok) throw new Error(`Azure copy 失败: ${cp.status}`);
+    if (cp.status === 202 || cp.headers.get("x-ms-copy-status") === "pending") {
+      const copyId = cp.headers.get("x-ms-copy-id");
+      for (let attempt = 0; attempt < 40; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        const headH = await this.sign("HEAD", dst);
+        const head = await fetch(dst, { method: "HEAD", headers: headH });
+        if (!head.ok) continue;
+        const status = (head.headers.get("x-ms-copy-status") || "").toLowerCase();
+        const currentId = head.headers.get("x-ms-copy-id");
+        if (copyId && currentId && copyId !== currentId) throw new Error("Azure copy 任务标识不一致");
+        if (status === "success" || (!status && head.headers.has("Content-Length"))) return;
+        if (status === "failed" || status === "aborted") throw new Error(`Azure copy 失败: ${status}`);
+      }
+      throw new Error("Azure copy 超时，源文件已保留");
+    }
+  }
+
+  async move(from: string, to: string): Promise<void> {
+    if (normalizePath(from) === normalizePath(to)) return;
+    if (normalizePath(to).startsWith(normalizePath(from).replace(/\/$/, "") + "/")) {
+      throw new Error("不能移动到自身或自身子目录");
+    }
+    const item = await this.get(from).catch(() => null);
+    if (item?.is_dir) {
+      const sourcePrefix = this.objPath(from).replace(/\/$/, "") + "/";
+      const targetPrefix = this.objPath(to).replace(/\/$/, "") + "/";
+        const names: string[] = [];
+      let marker = "";
+      do {
+        const query = new URLSearchParams({ restype: "container", comp: "list", prefix: sourcePrefix });
+        if (marker) query.set("marker", marker);
+        const url = `${this.base}/${this.container}?${query.toString()}`;
+        const h = await this.sign("GET", url, { extra: { "Content-Type": "application/xml" } });
+        const r = await fetch(url, { headers: h });
+        if (!r.ok) throw new Error(`Azure 目录列举失败: ${r.status}`);
+        const xml = await r.text();
+        const re = /<Blob><Name>([^<]+)<\/Name>/g;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(xml))) names.push(xmlUnescape(m[1]));
+        marker = xmlUnescape((xml.match(/<NextMarker>([^<]*)<\/NextMarker>/) || [])[1] || "");
+      } while (marker);
+      if (!names.length) throw new Error("目录为空或不存在");
+      for (const name of names) {
+        const targetName = targetPrefix + name.slice(sourcePrefix.length);
+        await this.copyBlob(this.keyURL(name), this.keyURL(targetName));
+      }
+      for (const name of names) {
+        const url = this.keyURL(name);
+        const h = await this.sign("DELETE", url, { extra: { "Content-Type": "application/xml" } });
+        const r = await fetch(url, { method: "DELETE", headers: h });
+        if (!r.ok && r.status !== 404) throw new Error(`Azure move 删除源文件失败: ${r.status}`);
+      }
+      return;
+    }
+    const src = this.blobURL(from);
+    const dst = this.blobURL(to);
+    await this.copyBlob(src, dst);
     const delH = await this.sign("DELETE", src, { extra: { "Content-Type": "application/xml" } });
-    await fetch(src, { method: "DELETE", headers: delH });
+    const del = await fetch(src, { method: "DELETE", headers: delH });
+    if (!del.ok && del.status !== 404) throw new Error(`Azure move 删除源文件失败: ${del.status}`);
   }
 
   // blob SAS（sp=w）直传签名
@@ -241,7 +331,7 @@ export class AzureBlobDriver extends CloudBase {
       "", // signedEncryptionScope
       "", "", "", "", "", // rscc rscd rsce rscl rsct
     ].join("\n");
-    const sig = b64url(await hmacSha256(this.keyBytes, sts));
+    const sig = b64std(await hmacSha256(this.keyBytes, sts));
     const u = new URL(`${this.base}/${this.container}/${blob}`);
     u.searchParams.set("sv", API_VER);
     u.searchParams.set("sr", "b");
@@ -250,4 +340,19 @@ export class AzureBlobDriver extends CloudBase {
     u.searchParams.set("sig", sig);
     return u.toString();
   }
+}
+
+function xmlUnescape(value: string): string {
+  return value.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+}
+
+function b64std(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let value = "";
+  for (const byte of bytes) value += String.fromCharCode(byte);
+  return btoa(value);
+}
+
+function encodeBlobKey(key: string): string {
+  return key.split("/").map((part) => encodeURIComponent(part)).join("/");
 }

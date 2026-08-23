@@ -37,26 +37,63 @@ export class BaiduPhotoDriver extends CloudBase {
     return j;
   }
 
+  private async postJ(url: string, data: Record<string, string>): Promise<any> {
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { ...(await this.hdrs()), "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(data),
+    });
+    if (!r.ok) throw new Error(`POST ${r.status} ${url}`);
+    const j = (await r.json()) as any;
+    if (j.errno && j.errno !== 0) throw new Error(`baidu_photo errno ${j.errno}`);
+    return j;
+  }
+
+  private nextCursor(j: any, current: string): string | undefined {
+    const next = j.next_cursor ?? j.cursor ?? j.nextCursor;
+    if (next == null || String(next) === "" || String(next) === current) return undefined;
+    if (j.has_more === false || j.hasMore === false) return undefined;
+    return String(next);
+  }
+
   async list(path: string): Promise<FileItem[]> {
     const d = dec(path);
     if (d.kind === "a") {
       // 相册内文件
-      const j = await this.getJ(ALBUM + "/listfile", { album_id: d.id, need_amount: "1", limit: "1000", passwd: "", cursor: "" });
       const out: FileItem[] = [];
-      for (const f of j.list || []) {
-        out.push({ name: f.server_filename || f.name, path: enc("f", String(f.fsid), f.server_filename || f.name), is_dir: false, size: f.size || 0, modified: (f.mtime || f.uptime || 0) * 1000 });
+      let cursor = "";
+      for (;;) {
+        const j = await this.getJ(ALBUM + "/listfile", { album_id: d.id, need_amount: "1", limit: "1000", passwd: "", cursor });
+        for (const f of j.list || []) {
+          out.push({ name: f.server_filename || f.name, path: enc("f", String(f.fsid), f.server_filename || f.name), is_dir: false, size: f.size || 0, modified: (f.mtime || f.uptime || 0) * 1000 });
+        }
+        const next = this.nextCursor(j, cursor);
+        if (!next) return out;
+        cursor = next;
       }
-      return out;
     }
     // 根：相册 + 文件
     const out: FileItem[] = [];
-    const al = await this.getJ(ALBUM + "/list", { need_amount: "1", limit: "100", cursor: "" });
-    for (const a of al.list || []) {
-      out.push({ name: a.title, path: enc("a", a.album_id, a.title), is_dir: true, size: 0, modified: (a.mtime || 0) * 1000 });
+    let cursor = "";
+    for (;;) {
+      const al = await this.getJ(ALBUM + "/list", { need_amount: "1", limit: "100", cursor });
+      for (const a of al.list || []) {
+        out.push({ name: a.title, path: enc("a", a.album_id, a.title), is_dir: true, size: 0, modified: (a.mtime || 0) * 1000 });
+      }
+      const next = this.nextCursor(al, cursor);
+      if (!next) break;
+      cursor = next;
     }
-    const fl = await this.getJ(FILE_V1 + "/list", { need_thumbnail: "1", need_filter_hidden: "0", cursor: "" });
-    for (const f of fl.list || []) {
-      out.push({ name: f.path ? f.path.split("/").pop() : String(f.fsid), path: enc("f", String(f.fsid), f.path ? f.path.split("/").pop() : String(f.fsid)), is_dir: false, size: f.size || 0, modified: (f.mtime || 0) * 1000 });
+    cursor = "";
+    for (;;) {
+      const fl = await this.getJ(FILE_V1 + "/list", { need_thumbnail: "1", need_filter_hidden: "0", cursor });
+      for (const f of fl.list || []) {
+        const name = f.path ? f.path.split("/").pop() : String(f.fsid);
+        out.push({ name, path: enc("f", String(f.fsid), name), is_dir: false, size: f.size || 0, modified: (f.mtime || 0) * 1000 });
+      }
+      const next = this.nextCursor(fl, cursor);
+      if (!next) break;
+      cursor = next;
     }
     return out;
   }
@@ -65,6 +102,7 @@ export class BaiduPhotoDriver extends CloudBase {
     const d = dec(path);
     if (d.kind === "a") return { name: d.name, path, is_dir: true, size: 0, modified: 0 };
     const j = await this.getJ(FILE_V2 + "/download", { fsid: d.id });
+    if (!j.dlink) throw new Error(`文件不存在或无法下载: ${path}`);
     return { name: d.name, path, is_dir: false, size: 0, modified: 0 };
   }
 
@@ -88,24 +126,22 @@ export class BaiduPhotoDriver extends CloudBase {
     const d = dec(parentPathOf(path));
     if (d.kind !== "" && parentPathOf(path) !== "/") throw new Error("仅根目录可建相册");
     const name = basename(path);
-    await fetch(ALBUM + "/create?" + new URLSearchParams({ title: name, tid: Date.now().toString(), source: "0" }), {
-      headers: await this.hdrs(),
-    });
+    await this.getJ(ALBUM + "/create", { title: name, tid: Date.now().toString(), source: "0" });
   }
 
   async remove(path: string): Promise<void> {
     const d = dec(path);
     if (d.kind === "f") {
-      await fetch(FILE_V1 + "/delete?" + new URLSearchParams({ fsid_list: `[${d.id}]` }), { headers: await this.hdrs() });
+      await this.getJ(FILE_V1 + "/delete", { fsid_list: `[${d.id}]` });
     } else {
-      await fetch(ALBUM + "/delete", { method: "POST", headers: await this.hdrs(), body: new URLSearchParams({ album_id: d.id, tid: "0", delete_origin_image: "0" }) });
+      await this.postJ(ALBUM + "/delete", { album_id: d.id, tid: "0", delete_origin_image: "0" });
     }
   }
 
   async rename(from: string, to: string): Promise<void> {
     const d = dec(from);
     if (d.kind !== "a") throw new Error("仅相册可改名");
-    await fetch(ALBUM + "/settitle", { method: "POST", headers: await this.hdrs(), body: new URLSearchParams({ title: basename(to), album_id: d.id, tid: "0" }) });
+    await this.postJ(ALBUM + "/settitle", { title: basename(to), album_id: d.id, tid: "0" });
   }
 
   async move(): Promise<void> {

@@ -40,11 +40,17 @@ export class QuarkUCDriver extends CloudBase {
     if (path === "/") return "0";
     let pdir = "0";
     for (const seg of path.split("/").filter(Boolean)) {
-      const j = await this.apiReq<{ data: { list: any[] }; metadata: { total: number } }>(
-        "/file/sort",
-        { pdir_fid: pdir, _size: "100", _fetch_total: "1", fetch_all_file: "1", _page: "1" }
-      );
-      const item = (j.data.list || []).find((f) => f.file_name === seg);
+      let page = 1;
+      let item: any;
+      for (;;) {
+        const j = await this.apiReq<{ data: { list: any[] }; metadata: { total: number } }>(
+          "/file/sort",
+          { pdir_fid: pdir, _size: "100", _fetch_total: "1", fetch_all_file: "1", _page: String(page) }
+        );
+        item = (j.data.list || []).find((f) => f.file_name === seg);
+        if (item || page * 100 >= (j.metadata?.total || 0) || !(j.data.list || []).length) break;
+        page++;
+      }
       if (!item) throw new Error(`quark_uc: 路径不存在 ${path}`);
       pdir = item.fid;
     }
@@ -82,9 +88,14 @@ export class QuarkUCDriver extends CloudBase {
     if (path === "/") return { name: "", path: "/", is_dir: true, size: 0, modified: 0 };
     const parent = path.split("/").slice(0, -1).join("/") || "/";
     const id = await this.resolveId(parent);
-    const j = await this.apiReq<{ data: { list: any[] } }>("/file/sort", { pdir_fid: id, _size: "100", _fetch_total: "1", fetch_all_file: "1", _page: "1" });
-    const name = path.split("/").pop();
-    const f = (j.data.list || []).find((x) => x.file_name === name);
+    let page = 1;
+    let f: any;
+    for (;;) {
+      const j = await this.apiReq<{ data: { list: any[] }; metadata: { total: number } }>("/file/sort", { pdir_fid: id, _size: "100", _fetch_total: "1", fetch_all_file: "1", _page: String(page) });
+      f = (j.data.list || []).find((x) => x.file_name === basename(path));
+      if (f || page * 100 >= (j.metadata?.total || 0) || !(j.data.list || []).length) break;
+      page++;
+    }
     if (!f) throw new Error(`quark_uc: 不存在 ${path}`);
     return this.toItem(f, parent);
   }
@@ -125,6 +136,8 @@ export class QuarkUCDriver extends CloudBase {
 
     const buf = new Uint8Array(await new Response(body).arrayBuffer());
     const total = buf.length;
+    if (size !== total) throw new Error(`quark_uc: 上传大小不一致：声明 ${size}，实际 ${total}`);
+    if (total === 0) throw new Error("quark_uc: 暂不支持零字节上传");
     const nParts = Math.ceil(total / partSize);
     const md5s: string[] = [];
     for (let i = 0; i < nParts; i++) {

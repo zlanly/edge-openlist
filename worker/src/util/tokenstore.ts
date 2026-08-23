@@ -7,14 +7,21 @@ export interface TokenSet {
   extra?: Record<string, any>;
 }
 
-export async function loadTokens(kv: KVNamespace, mountId: number): Promise<TokenSet | null> {
-  const raw = await kv.get(`tok:${mountId}`);
+function requireKv(kv: KVNamespace | undefined): KVNamespace {
+  if (!kv || typeof (kv as any).get !== "function" || typeof (kv as any).put !== "function") {
+    throw new Error("未配置 KV 绑定（KV），无法保存或读取登录令牌");
+  }
+  return kv;
+}
+
+export async function loadTokens(kv: KVNamespace | undefined, mountId: number): Promise<TokenSet | null> {
+  const raw = await requireKv(kv).get(`tok:${mountId}`);
   return raw ? (JSON.parse(raw) as TokenSet) : null;
 }
 
-export async function saveTokens(kv: KVNamespace, mountId: number, t: TokenSet): Promise<void> {
+export async function saveTokens(kv: KVNamespace | undefined, mountId: number, t: TokenSet): Promise<void> {
   // 30 天过期，避免僵尸凭据长期驻留
-  await kv.put(`tok:${mountId}`, JSON.stringify(t), { expirationTtl: 60 * 60 * 24 * 30 });
+  await requireKv(kv).put(`tok:${mountId}`, JSON.stringify(t), { expirationTtl: 60 * 60 * 24 * 30 });
 }
 
 export function isExpired(t: TokenSet | null, skewMs = 60_000): boolean {

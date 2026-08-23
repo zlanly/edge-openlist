@@ -19,36 +19,30 @@ const app = new Hono<AppEnv>({ strict: false });
 // 原实现挂在 "*" 上：每个静态资源请求（JS/CSS/图标…）都要 await 一次 initDb，
 // 首屏几十个请求全排在 D1 建表后面 —— 这正是「页面转圈半天没反应」的一大来源。
 // 现在只在 /api/* 与 /dav、/s 上执行，且结果在 isolate 内缓存，只跑一次。
-let dbReady: Promise<void> | null = null;
+const dbReady = new WeakMap<D1Database, Promise<void>>();
 function ensureDb(env: Env): Promise<void> {
-  if (!dbReady) {
-    dbReady = initDb(env).catch((e) => {
-      // 建表失败不能永久毒化缓存，否则 D1 短暂抖动后再也不会重试
-      dbReady = null;
-      throw e;
-    });
-  }
-  return dbReady;
+  if (!env.DB || typeof (env.DB as any).prepare !== "function") return Promise.resolve();
+  const db = env.DB as D1Database;
+  const existing = dbReady.get(db);
+  if (existing) return existing;
+  const task = initDb(env).catch((e) => {
+    dbReady.delete(db);
+    throw e;
+  });
+  dbReady.set(db, task);
+  return task;
 }
 
 app.use("/api/*", async (c, next) => {
-  try {
-    await ensureDb(c.env);
-  } catch {
-    // 建表失败不直接 500：具体接口访问 D1 时会抛出更精确的错误
-  }
+  await ensureDb(c.env);
   await next();
 });
 app.use("/dav/*", async (c, next) => {
-  try {
-    await ensureDb(c.env);
-  } catch {}
+  await ensureDb(c.env);
   await next();
 });
 app.use("/s/*", async (c, next) => {
-  try {
-    await ensureDb(c.env);
-  } catch {}
+  await ensureDb(c.env);
   await next();
 });
 

@@ -208,9 +208,10 @@ fs.post("/move", async (c) => {
 fs.post("/upload/init", async (c) => {
   const { mount: mountId, path, size } = await readJson<{ mount: number; path: string; size: number }>(c);
   const mount = await requireMount(c, intParam(String(mountId), "mount"));
+  if (!Number.isSafeInteger(size) || size < 0) throw badRequest("上传大小必须是非负整数");
   const driver = await loadDriver(c, mount);
   const target = assertNotMountRoot(mount, resolvePath(mount, requiredPathParam(path, "path")), "上传覆盖");
-  const sess = await withDriver(mount.name, () => driver.createUpload(target, size || 0));
+  const sess = await withDriver(mount.name, () => driver.createUpload(target, size));
   if (!sess || !sess.uploadUrl) throw unsupported(`「${mount.name}」当前配置不支持上传`);
   let uploadUrl = sess.uploadUrl;
   // WebDAV 代理上传：补上 mount 参数（uploadUrl 已自带 ?path=...）
@@ -228,14 +229,10 @@ fs.put("/put", async (c) => {
   const target = assertNotMountRoot(mount, resolvePath(mount, p), "上传覆盖");
   const body = c.req.raw.body;
   if (!body) throw badRequest("上传内容为空");
-  await withDriver(mount.name, () =>
-    driver.putContent!(
-      target,
-      body as ReadableStream,
-      c.req.header("Content-Type"),
-      Number(c.req.header("Content-Length") || 0)
-    )
-  );
+  const rawLength = c.req.header("Content-Length");
+  const size = rawLength == null ? undefined : Number(rawLength);
+  if (size !== undefined && (!Number.isSafeInteger(size) || size < 0)) throw badRequest("Content-Length 非法");
+  await withDriver(mount.name, () => driver.putContent!(target, body as ReadableStream, c.req.header("Content-Type"), size));
   return c.json({ ok: true });
 });
 

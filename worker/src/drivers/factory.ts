@@ -18,6 +18,7 @@ interface CacheEntry {
 }
 
 const CACHE = new Map<string, CacheEntry>();
+const IN_FLIGHT = new Map<string, Promise<Driver>>();
 const TTL_MS = 10 * 60 * 1000; // 10 分钟后重建，保证配置/令牌不会无限期陈旧
 const MAX_CACHE = 32; // isolate 内存有限，超出就淘汰最旧的
 
@@ -48,20 +49,35 @@ export async function buildDriver(env: Env, mount: MountRow): Promise<Driver> {
     return hit.driver;
   }
 
-  let cfg: DriverConfig;
-  try {
-    cfg = JSON.parse(mount.config_json || "{}") as DriverConfig;
-  } catch {
-    throw new Error(`挂载「${mount.name}」的配置不是合法 JSON，请到管理后台重新保存`);
+  const running = IN_FLIGHT.get(key);
+  if (running) {
+    const driver = await running;
+    driver.use(env);
+    return driver;
   }
-  (cfg as Record<string, unknown>)._mountId = mount.id;
 
-  const driver = createDriver(mount.driver, cfg, env);
-  await driver.init(cfg);
-
-  CACHE.set(key, { driver, at: Date.now() });
-  evictIfNeeded();
-  return driver;
+  const promise = (async () => {
+    let cfg: DriverConfig;
+    try {
+      cfg = JSON.parse(mount.config_json || "{}") as DriverConfig;
+    } catch {
+      throw new Error(`挂载「${mount.name}」的配置不是合法 JSON，请到管理后台重新保存`);
+    }
+    (cfg as Record<string, unknown>)._mountId = mount.id;
+    const driver = createDriver(mount.driver, cfg, env);
+    await driver.init(cfg);
+    CACHE.set(key, { driver, at: Date.now() });
+    evictIfNeeded();
+    return driver;
+  })();
+  IN_FLIGHT.set(key, promise);
+  try {
+    const driver = await promise;
+    driver.use(env);
+    return driver;
+  } finally {
+    if (IN_FLIGHT.get(key) === promise) IN_FLIGHT.delete(key);
+  }
 }
 
 /** 挂载被修改/删除时清掉缓存，避免旧实例继续服务。 */

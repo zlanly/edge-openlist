@@ -48,15 +48,9 @@ export interface CipherOptions {
 }
 
 function randomBytes(n: number): Uint8Array {
-  const g = globalThis as any;
-  if (g.crypto && g.crypto.getRandomValues) {
-    return g.crypto.getRandomValues(new Uint8Array(n));
-  }
-  const nodeCrypto = g.require ? g.require("crypto") : null;
-  if (nodeCrypto && nodeCrypto.randomBytes) {
-    return new Uint8Array(nodeCrypto.randomBytes(n));
-  }
-  throw new Error("no secure RNG available");
+  const webCrypto = (globalThis as { crypto?: Crypto }).crypto;
+  if (!webCrypto?.getRandomValues) throw new Error("当前运行环境不支持安全随机数");
+  return webCrypto.getRandomValues(new Uint8Array(n));
 }
 
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array {

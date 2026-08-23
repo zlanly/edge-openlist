@@ -65,8 +65,14 @@ export function parseRange(
   const start = m[1];
   const end = m[2];
   if (start === "" && end === "") return null;
-  if (start === "") return { suffix: Number(end) }; // bytes=-N
+  if (start === "") {
+    const suffix = Number(end);
+    return Number.isSafeInteger(suffix) && suffix > 0 ? { suffix } : null; // bytes=-N
+  }
   const off = Number(start);
+  if (!Number.isSafeInteger(off) || off < 0) return null;
   if (end === "") return { offset: off }; // bytes=N-
-  return { offset: off, length: Number(end) - off + 1 }; // bytes=N-M
+  const last = Number(end);
+  if (!Number.isSafeInteger(last) || last < off) return null;
+  return { offset: off, length: last - off + 1 }; // bytes=N-M
 }

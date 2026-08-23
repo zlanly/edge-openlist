@@ -1,5 +1,5 @@
 import type { Driver, DriverConfig, Env, FileItem, UploadSession } from "../types";
-import { basename, joinPath, normalizePath, parentPath, sortItems } from "./base";
+import { basename, joinPath, normalizePath, parentPath, sortItems, parseRange } from "./base";
 import { CloudBase } from "./cloud-base";
 
 // 元/虚拟驱动：从配置内联的文件树 / 直链直接构造 FileItem，不依赖任何底层存储。
@@ -14,6 +14,7 @@ interface VNode {
   modified: number;
   url?: string;
   content?: string;
+  contentBytes?: Uint8Array;
   children?: Record<string, VNode>;
 }
 
@@ -47,7 +48,7 @@ export class VirtualDriver extends CloudBase {
     return {
       name,
       is_dir: false,
-      size: Number(obj?.size) || 0,
+      size: obj?.content != null ? new TextEncoder().encode(String(obj.content)).length : Number(obj?.size) || 0,
       modified: Number(obj?.modified) || Date.now(),
       url: obj?.url,
       content: obj?.content,
@@ -103,10 +104,27 @@ export class VirtualDriver extends CloudBase {
     const node = this.resolve(path);
     if (!node || node.is_dir) throw new Error("不是文件: " + path);
     if (node.content != null) {
-      const body = node.content;
-      return new Response(body, {
-        headers: { "Content-Type": "application/octet-stream", "Content-Length": String(new TextEncoder().encode(body).length) },
-      });
+      const body = node.contentBytes || new TextEncoder().encode(node.content);
+      const parsed = range ? parseRange(range) : null;
+      if (range && !parsed) return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${body.length}` } });
+      let start = 0;
+      let end = Math.max(0, body.length - 1);
+      if (parsed) {
+        if ("suffix" in parsed) {
+          start = Math.max(0, body.length - parsed.suffix);
+        } else {
+          start = parsed.offset;
+          end = parsed.length == null ? end : start + parsed.length - 1;
+        }
+        if (start >= body.length) return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${body.length}` } });
+        end = Math.min(end, body.length - 1);
+      }
+      const headers = new Headers({ "Content-Type": "application/octet-stream", "Content-Length": String(end - start + 1) });
+      if (parsed) {
+        headers.set("Content-Range", `bytes ${start}-${end}/${body.length}`);
+        return new Response(body.slice(start, end + 1), { status: 206, headers });
+      }
+      return new Response(body, { headers });
     }
     if (node.url) {
       if (range) {
@@ -127,13 +145,14 @@ export class VirtualDriver extends CloudBase {
     const par = this.parentOf(path);
     if (!par) throw new Error("父目录不存在");
     const name = par.name;
-    const text = await new Response(body).text();
+    const contentBytes = new Uint8Array(await new Response(body).arrayBuffer());
     par.parent.children![name] = {
       name,
       is_dir: false,
-      size: size || new TextEncoder().encode(text).length,
+      size: contentBytes.length,
       modified: Date.now(),
-      content: text,
+      content: new TextDecoder().decode(contentBytes),
+      contentBytes,
     };
   }
 
@@ -147,28 +166,28 @@ export class VirtualDriver extends CloudBase {
   }
 
   async remove(path: string): Promise<void> {
+    if (normalizePath(path) === "/") throw new Error("不能删除根目录");
     const par = this.parentOf(path);
-    if (!par) throw new Error("不存在");
+    if (!par || !par.parent.children![par.name]) throw new Error("不存在");
     delete par.parent.children![par.name];
   }
 
   async rename(from: string, to: string): Promise<void> {
-    const par = this.parentOf(from);
-    if (!par || !par.parent.children![par.name]) throw new Error("不存在");
+    const source = normalizePath(from);
+    const target = normalizePath(to);
+    if (source === "/" || target === "/") throw new Error("不能重命名根目录");
+    const par = this.parentOf(source);
+    const dest = this.parentOf(target);
+    if (!par || !dest || !par.parent.children![par.name]) throw new Error("路径错误");
     const node = par.parent.children![par.name];
+    if (node.is_dir && target.startsWith(source + "/")) throw new Error("不能移动目录到自身内部");
+    if (dest.parent.children![dest.name]) throw new Error("目标已存在");
     delete par.parent.children![par.name];
-    node.name = basename(to);
-    par.parent.children![node.name] = node;
+    node.name = dest.name;
+    dest.parent.children![dest.name] = node;
   }
 
   async move(from: string, to: string): Promise<void> {
-    const par = this.parentOf(from);
-    const dest = this.parentOf(to);
-    if (!par || !dest) throw new Error("路径错误");
-    const node = par.parent.children![par.name];
-    delete par.parent.children![par.name];
-    node.name = basename(to);
-    if (!dest.parent.children) dest.parent.children = {};
-    dest.parent.children[node.name] = node;
+    await this.rename(from, to);
   }
 }

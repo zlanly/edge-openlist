@@ -77,18 +77,23 @@ export class Pan123Driver extends CloudBase {
     };
   }
 
-  private async api<T>(pathname: string, params: Record<string, string>, method = "GET", body?: unknown): Promise<T> {
+  private async api<T>(pathname: string, params: Record<string, string>, method = "GET", body?: unknown, retried = false): Promise<T> {
     const h = await this.hdrs();
-    const url = this.getApi(`${MAIN}${pathname}`);
-    const r = await fetch(params && method === "GET" ? `${url}?${new URLSearchParams(params).toString()}` : url, {
+    const url = new URL(this.getApi(`${MAIN}${pathname}`));
+    if (method === "GET") {
+      for (const [key, value] of Object.entries(params || {})) url.searchParams.set(key, value);
+    }
+    const r = await fetch(url.toString(), {
       method,
       headers: { "Content-Type": "application/json", ...h },
       body: body ? JSON.stringify(body) : undefined,
     });
     const j = (await r.json()) as any;
     if (j.code === 401) {
+      if (retried) throw new Error(`123: ${j.message || "认证失败"}`);
+      this.token = "";
       await this.login();
-      return this.api<T>(pathname, params, method, body);
+      return this.api<T>(pathname, params, method, body, true);
     }
     if (j.code !== 0) throw new Error(`123: ${j.message}`);
     return j as T;

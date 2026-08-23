@@ -44,7 +44,7 @@ export class CryptDriver extends CloudBase {
     await super.init(cfg);
     const password = reveal(this.cfgStr("password"));
     let salt = this.cfgStr("salt") || "";
-    if (this.cfgStr("password2")) salt = this.cfgStr("password2"); // rclone: password2 即盐
+    if (this.cfgStr("password2")) salt = reveal(this.cfgStr("password2")); // rclone: password2 是 obscure 后的盐
 
     const dirEncRaw = this.cfgStr("directory_name_encryption");
     const dirNameEncrypt = dirEncRaw === "" ? true : dirEncRaw === "true" || dirEncRaw === "1";
@@ -92,8 +92,8 @@ export class CryptDriver extends CloudBase {
   }
 
   // rclone 列表项统一按文件名解密（目录在创建时也是以文件名为末段加密）；dirNameEncrypt=false 时目录名本就明文。
-  private async decSeg(s: string): Promise<string> {
-    return this.cipher.decryptFileName(s);
+  private async decSeg(s: string, isDir = false): Promise<string> {
+    return isDir && !this.cipher.dirNameEncrypt ? s : this.cipher.decryptFileName(s);
   }
 
   private decryptedSize(e: number): number {
@@ -106,7 +106,7 @@ export class CryptDriver extends CloudBase {
     const out: FileItem[] = [];
     for (const o of items) {
       const isDir = o.is_dir;
-      const name = await this.decSeg(o.name);
+      const name = await this.decSeg(o.name, isDir);
       out.push({
         name,
         path: joinPath(path, name),
@@ -121,7 +121,7 @@ export class CryptDriver extends CloudBase {
   async get(path: string): Promise<FileItem> {
     const d = await this.remote();
     const o = await d.get(await this.encPath(path));
-    const name = await this.decSeg(o.name);
+    const name = await this.decSeg(o.name, o.is_dir);
     return {
       name,
       path,
@@ -202,8 +202,9 @@ export class CryptDriver extends CloudBase {
 
   async putContent(path: string, body: ReadableStream, _ct?: string, _size?: number): Promise<void> {
     const d = await this.remote();
+    if (!d.putContent) throw new Error("crypt 底层驱动不支持代理上传");
     const encStream = body.pipeThrough(this.cipher.makeEncryptStream());
-    await d.putContent?.(await this.encPath(path), encStream);
+    await d.putContent(await this.encPath(path), encStream);
   }
 
   async mkdir(path: string): Promise<void> {

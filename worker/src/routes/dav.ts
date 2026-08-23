@@ -9,10 +9,10 @@ import { assertUpstreamOk, buildContentResponse, proxyDirectLink } from "../util
 
 const dav = new Hono<AppEnv>();
 
-// ---------- ¼øÈ¨ ----------
-// Ô­ÊµÏÖÖ»ÈÏ Bearer JWT£¬µ« Windows ×ÊÔ´¹ÜÀíÆ÷ / macOS Finder / RaiDrive
-// ÕâÐ© WebDAV ¿Í»§¶ËÖ»»á·¢ Basic ¡ª¡ª ÓÚÊÇ /dav ¶ÔÕæÊµ¿Í»§¶Ë 100% 401¡£
-// ÕâÀïÁ½ÖÖ¶¼½ÓÊÜ£¬²¢ÔÚÈ±Ê§Ê±»Ø 401 + WWW-Authenticate ´¥·¢¿Í»§¶Ëµ¯¿ò¡£
+// ---------- ï¿½ï¿½È¨ ----------
+// Ô­Êµï¿½ï¿½Ö»ï¿½ï¿½ Bearer JWTï¿½ï¿½ï¿½ï¿½ Windows ï¿½ï¿½Ô´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ / macOS Finder / RaiDrive
+// ï¿½ï¿½Ð© WebDAV ï¿½Í»ï¿½ï¿½ï¿½Ö»ï¿½á·¢ Basic ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ /dav ï¿½ï¿½ï¿½ï¿½Êµï¿½Í»ï¿½ï¿½ï¿½ 100% 401ï¿½ï¿½
+// ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö¶ï¿½ï¿½ï¿½ï¿½Ü£ï¿½ï¿½ï¿½ï¿½ï¿½È±Ê§Ê±ï¿½ï¿½ 401 + WWW-Authenticate ï¿½ï¿½ï¿½ï¿½ï¿½Í»ï¿½ï¿½Ëµï¿½ï¿½ï¿½
 function davChallenge(): Response {
   return new Response("Unauthorized", {
     status: 401,
@@ -55,14 +55,14 @@ dav.use("*", async (c, next) => {
   return davChallenge();
 });
 
-// ---------- XML ¹¤¾ß ----------
+// ---------- XML ï¿½ï¿½ï¿½ï¿½ ----------
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" }[ch]!));
 }
 function fmtDate(ms: number): string {
   return new Date(ms || Date.now()).toUTCString();
 }
-/** href ÐèÖð¶Î±àÂë£ºÕû¶Î encodeURIComponent »á°Ñ / Ò²±àµô£¬µ¼ÖÂ¿Í»§¶ËÎÞ·¨ÏÂ×ê¡£ */
+/** href ï¿½ï¿½ï¿½ï¿½Î±ï¿½ï¿½ë£ºï¿½ï¿½ï¿½ï¿½ encodeURIComponent ï¿½ï¿½ï¿½ / Ò²ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Â¿Í»ï¿½ï¿½ï¿½ï¿½Þ·ï¿½ï¿½ï¿½ï¿½ê¡£ */
 function encodeHref(p: string): string {
   return p.split("/").map(encodeURIComponent).join("/");
 }
@@ -91,27 +91,41 @@ function textPlain(msg: string, status: number): Response {
   return new Response(msg, { status, headers: { "Content-Type": "text/plain; charset=utf-8" } });
 }
 
-/** °Ñ /dav/:id ÏÂµÄÏà¶ÔÂ·¾¶½âÎö³É¹ÒÔØÄÚÕæÊµÂ·¾¶£¨´ËÇ°ÍêÈ«ºöÂÔÁË mount.root£©¡£ */
+/** ï¿½ï¿½ /dav/:id ï¿½Âµï¿½ï¿½ï¿½ï¿½Â·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½É¹ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ÊµÂ·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ç°ï¿½ï¿½È«ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ mount.rootï¿½ï¿½ï¿½ï¿½ */
 function resolve(mount: MountRow, rel: string): string {
   const root = normalizePath(mount.root || "/");
   const p = normalizePath(rel || "/");
-  if (p.includes("..")) throw badRequest("Â·¾¶·Ç·¨");
+  if (p.split("/").some((part) => part === "..")) throw badRequest("è·¯å¾„éžæ³•");
   return root === "/" ? p : normalizePath(root + p);
+}
+
+function assertNotMountRoot(mount: MountRow, path: string, action: string): string {
+  const root = normalizePath(mount.root || "/");
+  if (normalizePath(path) === root) throw badRequest(`ä¸èƒ½${action}æŒ‚è½½æ ¹ç›®å½•`);
+  return path;
+}
+
+function decodePathPart(part: string): string {
+  try {
+    return decodeURIComponent(part);
+  } catch {
+    throw badRequest("è·¯å¾„ç¼–ç éžæ³•");
+  }
 }
 
 dav.all("*", async (c: AppContext) => {
   const full = c.req.path.replace(/^\/dav/, "");
   const parts = full.split("/").filter(Boolean);
   if (parts.length === 0) {
-    return textPlain("ÐèÒªÖ¸¶¨¹ÒÔØ ID£¬ÀýÈç /dav/1/Â·¾¶", 400);
+    return textPlain("ï¿½ï¿½ÒªÖ¸ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ IDï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ /dav/1/Â·ï¿½ï¿½", 400);
   }
   const mountId = Number(parts[0]);
-  if (!Number.isInteger(mountId) || mountId < 0) return textPlain("¹ÒÔØ ID ·Ç·¨", 400);
+  if (!Number.isInteger(mountId) || mountId < 0) return textPlain("ï¿½ï¿½ï¿½ï¿½ ID ï¿½Ç·ï¿½", 400);
 
   const mount: MountRow | null = await getStore(c.env).getMount(mountId);
-  if (!mount || !mount.enabled) return textPlain("¹ÒÔØ²»´æÔÚ»òÒÑ½ûÓÃ", 404);
+  if (!mount || !mount.enabled) return textPlain("ï¿½ï¿½ï¿½Ø²ï¿½ï¿½ï¿½ï¿½Ú»ï¿½ï¿½Ñ½ï¿½ï¿½ï¿½", 404);
 
-  const relPath = "/" + parts.slice(1).map(decodeURIComponent).join("/");
+  const relPath = "/" + parts.slice(1).map(decodePathPart).join("/");
   const path = resolve(mount, relPath);
   const driver = await withDriver(mount.name, () => buildDriver(c.env, mount));
 
@@ -140,12 +154,12 @@ dav.all("*", async (c: AppContext) => {
     }
 
     if (items === null) {
-      // ²»ÊÇÄ¿Â¼ -> µ±×÷µ¥¸öÎÄ¼þ·µ»Ø
+      // ï¿½ï¿½ï¿½ï¿½Ä¿Â¼ -> ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä¼ï¿½ï¿½ï¿½ï¿½ï¿½
       try {
         const f = await driver.get(path);
         return xml(`<D:multistatus xmlns:D="DAV:">${itemToResponse(baseHref, relPath, f)}</D:multistatus>`);
       } catch {
-        return textPlain("×ÊÔ´²»´æÔÚ", 404);
+        return textPlain("ï¿½ï¿½Ô´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½", 404);
       }
     }
 
@@ -168,8 +182,8 @@ dav.all("*", async (c: AppContext) => {
     const name = basename(relPath) || mount.name;
     const res = await withDriver(mount.name, () => driver.getContent(path, range));
 
-    // Ô­ÊµÏÖ¶ÔÖ±Á´ fetch ÁË**Á½´Î**£¨Ò»´ÎÈ¡ body¡¢Ò»´ÎÈ¡ headers£©£º
-    // Á÷Á¿·­±¶£¬¶øÇÒºÜ¶àÍøÅÌµÄÖ±Á´ÊÇÒ»´ÎÐÔµÄ£¬µÚ¶þ´Î±ØÈ»Ê§°Ü -> ÏÂÔØ¿ÕÎÄ¼þ¡£
+    // Ô­Êµï¿½Ö¶ï¿½Ö±ï¿½ï¿½ fetch ï¿½ï¿½**ï¿½ï¿½ï¿½ï¿½**ï¿½ï¿½Ò»ï¿½ï¿½È¡ bodyï¿½ï¿½Ò»ï¿½ï¿½È¡ headersï¿½ï¿½ï¿½ï¿½
+    // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ÒºÜ¶ï¿½ï¿½ï¿½ï¿½Ìµï¿½Ö±ï¿½ï¿½ï¿½ï¿½Ò»ï¿½ï¿½ï¿½ÔµÄ£ï¿½ï¿½Ú¶ï¿½ï¿½Î±ï¿½È»Ê§ï¿½ï¿½ -> ï¿½ï¿½ï¿½Ø¿ï¿½ï¿½Ä¼ï¿½ï¿½ï¿½
     let out: Response;
     if (typeof res === "string") {
       out = await proxyDirectLink(res, mount.name, name, true, range);
@@ -178,16 +192,17 @@ dav.all("*", async (c: AppContext) => {
       out = buildContentResponse(res, name, true);
     }
     if (method === "HEAD") {
-      // HEAD ±ØÐë¶ªÆú body µ«±£ÁôÍ·£¨º¬ Content-Length£©£¬·ñÔò¿Í»§¶ËËã²»³öÎÄ¼þ´óÐ¡
+      // HEAD ï¿½ï¿½ï¿½ë¶ªï¿½ï¿½ body ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Í·ï¿½ï¿½ï¿½ï¿½ Content-Lengthï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Í»ï¿½ï¿½ï¿½ï¿½ã²»ï¿½ï¿½ï¿½Ä¼ï¿½ï¿½ï¿½Ð¡
       return new Response(null, { status: out.status, headers: out.headers });
     }
     return out;
   }
 
   if (method === "PUT") {
-    if (!driver.putContent) return textPlain("¸ÃÇý¶¯²»Ö§³Ö WebDAV ÉÏ´«", 405);
+    if (!driver.putContent) return textPlain("ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö§ï¿½ï¿½ WebDAV ï¿½Ï´ï¿½", 405);
+    assertNotMountRoot(mount, path, "ä¸Šä¼ è¦†ç›–");
     const body = c.req.raw.body;
-    if (!body) return textPlain("ÉÏ´«ÄÚÈÝÎª¿Õ", 400);
+    if (!body) return textPlain("ï¿½Ï´ï¿½ï¿½ï¿½ï¿½ï¿½Îªï¿½ï¿½", 400);
     await withDriver(mount.name, () =>
       driver.putContent!(path, body as ReadableStream, c.req.header("Content-Type"), Number(c.req.header("Content-Length") || 0))
     );
@@ -195,33 +210,41 @@ dav.all("*", async (c: AppContext) => {
   }
 
   if (method === "DELETE") {
+    assertNotMountRoot(mount, path, "åˆ é™¤");
     await withDriver(mount.name, () => driver.remove(path));
     return new Response(null, { status: 204 });
   }
 
   if (method === "MKCOL") {
+    assertNotMountRoot(mount, path, "åˆ›å»ºç›®å½•äºŽ");
     await withDriver(mount.name, () => driver.mkdir(path));
     return new Response(null, { status: 201 });
   }
 
   if (method === "MOVE" || method === "COPY") {
     const dest = c.req.header("Destination") || "";
-    if (!dest) return textPlain("È±ÉÙ Destination Í·", 400);
+    if (!dest) return textPlain("È±ï¿½ï¿½ Destination Í·", 400);
     let destRel: string;
     try {
-      // Destination ¿ÉÄÜÊÇ¾ø¶Ô URL£¬Ò²¿ÉÄÜÊÇ¾ø¶ÔÂ·¾¶
-      const pathname = dest.startsWith("http") ? new URL(dest).pathname : dest;
-      destRel = normalizePath(decodeURIComponent(pathname.replace(/^\/dav\/\d+/, "")));
+      // Destination å¯ä»¥æ˜¯ç»å¯¹ URLï¼Œä¹Ÿå¯ä»¥æ˜¯ç»å¯¹è·¯å¾„ï¼›å¿…é¡»æŒ‡å‘å½“å‰æŒ‚è½½ã€‚
+      const parsed = dest.startsWith("http") ? new URL(dest) : null;
+      const pathname = parsed ? parsed.pathname : dest;
+      const mountPrefix = `/dav/${mountId}`;
+      if (parsed && parsed.origin !== new URL(c.req.url).origin) return textPlain("Destination å¿…é¡»æŒ‡å‘å½“å‰ç«™ç‚¹", 400);
+      if (!pathname.startsWith(mountPrefix + "/") && pathname !== mountPrefix) return textPlain("Destination å¿…é¡»æŒ‡å‘å½“å‰æŒ‚è½½", 400);
+      destRel = normalizePath(decodeURIComponent(pathname.slice(mountPrefix.length) || "/"));
     } catch {
-      return textPlain("Destination Í··Ç·¨", 400);
+      return textPlain("Destination å¤´éžæ³•", 400);
     }
-    if (method === "COPY") throw unsupported("ÔÝ²»Ö§³Ö COPY£¬Çë¸ÄÓÃÒÆ¶¯»òÖØÐÂÉÏ´«");
-    await withDriver(mount.name, () => driver.move(path, resolve(mount, destRel)));
+    if (method === "COPY") throw unsupported("æš‚ä¸æ”¯æŒ COPYï¼Œè¯·ä½¿ç”¨ç§»åŠ¨æˆ–é‡æ–°ä¸Šä¼ ");
+    const target = assertNotMountRoot(mount, resolve(mount, destRel), "ç§»åŠ¨åˆ°");
+    if (target === path) return new Response(null, { status: 204 });
+    await withDriver(mount.name, () => driver.move(path, target));
     return new Response(null, { status: 204 });
   }
 
   if (method === "LOCK") {
-    // Õ¼Î»Ëø£ºFinder / Office »áÏÈ LOCK ÔÙÐ´Èë£¬·µ»ØÒ»¸ö¼Ù token ¼´¿É·ÅÐÐ
+    // Õ¼Î»ï¿½ï¿½ï¿½ï¿½Finder / Office ï¿½ï¿½ï¿½ï¿½ LOCK ï¿½ï¿½Ð´ï¿½ë£¬ï¿½ï¿½ï¿½ï¿½Ò»ï¿½ï¿½ï¿½ï¿½ token ï¿½ï¿½ï¿½É·ï¿½ï¿½ï¿½
     const token = `opaquelocktoken:${crypto.randomUUID()}`;
     return new Response(
       `<?xml version="1.0" encoding="utf-8"?>
@@ -237,7 +260,7 @@ dav.all("*", async (c: AppContext) => {
   }
   if (method === "UNLOCK") return new Response(null, { status: 204 });
 
-  return textPlain("²»Ö§³ÖµÄ·½·¨", 405);
+  return textPlain("ï¿½ï¿½Ö§ï¿½ÖµÄ·ï¿½ï¿½ï¿½", 405);
 });
 
 export default dav;

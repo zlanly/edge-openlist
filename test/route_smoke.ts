@@ -41,7 +41,7 @@ async function main() {
   console.log(`/api/oauth/providers -> ${o.status}`);
   const me = await raw("/api/auth/me", env, { Authorization: "Bearer " + token });
   console.log(`/api/auth/me -> ${me.status} ${me.txt.slice(0, 60)}`);
-  const create = await raw("/api/mounts/", env, { Authorization: "Bearer " + token }, "POST", JSON.stringify({ name: "t", driver: "local" }));
+  const create = await raw("/api/mounts/", env, { Authorization: "Bearer " + token, "Content-Type": "application/json" }, "POST", JSON.stringify({ name: "t", driver: "virtual", config: { tree: "{}" } }));
   console.log(`POST /api/mounts/ -> ${create.status}`);
 
   // 不带 token 应 401

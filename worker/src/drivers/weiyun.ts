@@ -209,26 +209,22 @@ export class WeiyunDriver extends CloudBase {
     const buf = new Uint8Array(await new Response(body).arrayBuffer());
 
     // 计算分块 sha1
-    const count = Math.max(1, Math.ceil(size / BLOCK));
-    const lastBlockSize = size % BLOCK === 0 ? BLOCK : size % BLOCK;
-    const beforeBlockSize = size - lastBlockSize;
+    if (size !== buf.length) throw new Error(`微云上传大小不一致：声明 ${size}，实际 ${buf.length}`);
+    const actualSize = buf.length;
+    const count = Math.max(1, Math.ceil(actualSize / BLOCK));
+    const lastBlockSize = actualSize % BLOCK === 0 ? BLOCK : actualSize % BLOCK;
+    const beforeBlockSize = actualSize - lastBlockSize;
     const blockInfoList: Json[] = [];
     let checkSha = "";
     let checkData = "";
     let fileHash = "";
     const hash = new Uint8Array(0);
     void hash;
-    let prefix = new Uint8Array(0);
-    const acc: Uint8Array[] = [];
-    let accLen = 0;
     for (let i = 0; i < count; i++) {
       const start = i * BLOCK;
-      const end = Math.min(size, start + BLOCK);
+      const end = Math.min(actualSize, start + BLOCK);
       const slice = buf.slice(start, end);
-      acc.push(slice); accLen += slice.length;
-      // 计算截至当前块末尾的 sha1（块边界为 64 的倍数，等价于内部状态）
-      const pre = concat(acc, accLen);
-      const hex = await sha1Hex(pre);
+      const hex = await sha1Hex(slice);
       if (i === count - 1) {
         fileHash = hex;
       }
@@ -246,7 +242,7 @@ export class WeiyunDriver extends CloudBase {
 
     const paramJson: Json = {
       common_upload_req: {
-        ppdir_key: parent.pdirKey, pdir_key: parent.dirKey, file_size: size,
+        ppdir_key: parent.pdirKey, pdir_key: parent.dirKey, file_size: actualSize,
         filename: name, file_exist_option: 1, use_mutil_channel: true,
       },
       upload_scr: 0, channel_count: 1, block_size: BLOCK,

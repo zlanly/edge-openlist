@@ -58,8 +58,14 @@ export class QuarkDriveDriver extends CloudBase {
   }
 
   async get(path: string): Promise<FileItem> {
-    const fid = await this.resolveFid(path);
-    return { name: basename(path), path, is_dir: false, size: 0, modified: 0, etag: fid };
+    if (path === "/") return { name: "", path: "/", is_dir: true, size: 0, modified: 0, etag: "0" };
+    const parent = parentPath(path);
+    const pdir = await this.resolveFid(parent);
+    const url = `${API}/file/sort?pr=ucpro&fr=pc&uc_param_str=&pdir_fid=${pdir}&_=${Date.now()}`;
+    const j = await this.jsonGet<{ data: { list: any[] } }>(url);
+    const item = (j.data?.list || []).find((f) => f.file_name === basename(path));
+    if (!item) throw new Error(`路径不存在: ${path}`);
+    return { name: item.file_name, path, is_dir: item.file_type === 0 || item.dir === true || item.category === "folder", size: Number(item.file_size || 0), modified: item.updated_at ? Date.parse(item.updated_at) : 0, etag: item.fid };
   }
 
   async getContent(path: string, range?: string): Promise<Response | string> {

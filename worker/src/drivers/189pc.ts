@@ -98,16 +98,17 @@ export class Cloud189PCDriver extends CloudBase {
     const headers: Record<string, string> = { Date: date, SessionKey: sessionKey, "X-Request-ID": crypto.randomUUID(), Signature: sig };
     const r = await fetch(url, { method, headers, body: method === "POST" ? new URLSearchParams(params || {}).toString() : undefined });
     const text = await r.text();
+    if (!r.ok) throw new Error(`189pc HTTP ${r.status}: ${text.slice(0, 500)}`);
     if (text.includes("InvalidSessionKey") || text.includes("userSessionBO is null")) {
-      await this.ensureSession(); // 重新登录后重试一次由调用方处理；此处直接抛错由上层感知
+      const current = await loadTokens(this.env.KV, this.mountId);
+      if (current) await saveTokens(this.env.KV, this.mountId, { ...current, expires_at: 0, extra: {} });
+      throw new Error("189pc 会话已失效，请刷新会话后重试");
     }
-    try {
-      const j = JSON.parse(text);
-      if (j.res_code && j.res_code !== 0 && String(j.res_code) !== "0") throw new Error(`189pc err ${j.res_code}: ${j.res_message}`);
-      return j;
-    } catch {
-      return text;
-    }
+    let j: any;
+    try { j = JSON.parse(text); } catch { return text; }
+    if (j.res_code != null && String(j.res_code) !== "0") throw new Error(`189pc err ${j.res_code}: ${j.res_message}`);
+    return j;
+
   }
 
   private async apiPrefix(isFamily: boolean): Promise<string> {
@@ -182,10 +183,13 @@ export class Cloud189PCDriver extends CloudBase {
     }, fam);
   }
 
-  private async createBatchTask(type: string, taskInfos: any[]): Promise<void> {
+  private async createBatchTask(type: string, taskInfos: any[], targetFolderId?: string): Promise<void> {
     const fam = this.isFamily();
     await this.request("POST", `${API_URL}/batch/createBatchTask.action`, {
-      type, taskInfos: JSON.stringify(taskInfos), ...(fam ? { familyId: this.cfgStr("familyId") } : {}),
+      type,
+      taskInfos: JSON.stringify(taskInfos),
+      ...(targetFolderId ? { targetFolderId } : {}),
+      ...(fam ? { familyId: this.cfgStr("familyId") } : {}),
     }, fam);
   }
 
@@ -205,8 +209,7 @@ export class Cloud189PCDriver extends CloudBase {
   async move(from: string, to: string): Promise<void> {
     const it = await this.get(from);
     const destId = parentPath(to) === "/" ? "-11" : await this.resolveId(parentPath(to));
-    await this.createBatchTask("MOVE", [{ fileId: it.etag, fileName: basename(from), isFolder: it.is_dir ? 1 : 0 }]);
-    void destId;
+    await this.createBatchTask("MOVE", [{ fileId: it.etag, fileName: basename(from), isFolder: it.is_dir ? 1 : 0 }], destId);
   }
 }
 

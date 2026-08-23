@@ -53,7 +53,8 @@ export class UssDriver extends CloudBase {
   private signExpire = 4;
 
   private cfgStr(k: string): string {
-    return ((this.cfg as Record<string, unknown>)[k] as string) ?? "";
+    const value = (this.cfg as Record<string, unknown>)[k];
+    return value == null ? "" : String(value);
   }
   private cfgNum(k: string, d: number): number {
     const v = (this.cfg as Record<string, unknown>)[k];
@@ -97,22 +98,25 @@ export class UssDriver extends CloudBase {
     key: string,
     headers: Record<string, string> = {},
     body?: BodyInit | null,
+    allowNotFound = false,
   ): Promise<Response> {
     const uri = ["", this.bucket, escapeUri(key)].join("/").replace(/\/{2,}/g, "/");
     const finalUri = key.endsWith("/") ? uri + "/" : uri;
     const date = new Date().toUTCString(); // RFC1123 (GMT)
     const auth = await this.authHeader(method, finalUri, date, headers["Content-MD5"] || "");
-    const r = await fetch(`https://${REST_HOST}${finalUri}`, {
+    const endpoint = this.endpoint.replace(/\/+$/, "");
+    const endpointHost = new URL(endpoint).host;
+    const r = await fetch(`${endpoint}${finalUri}`, {
       method,
       headers: {
-        Host: REST_HOST,
+        Host: endpointHost,
         Date: date,
         Authorization: auth,
         ...headers,
       },
       body,
     });
-    if (!r.ok && r.status !== 206) {
+    if (!r.ok && r.status !== 206 && !(allowNotFound && r.status === 404)) {
       throw new Error(`USS ${method} ${r.status} ${finalUri}: ${await r.text().catch(() => "")}`);
     }
     return r;
@@ -141,9 +145,9 @@ export class UssDriver extends CloudBase {
           modified: Number(f.last_modified || 0) * 1000,
         });
       }
-      iter = j.iter || "";
-      if (iter === "g2gCZAAEbmV4dGQAA2VvZg") break; // 终止符（upyun SDK 约定）
-      if (!iter) break;
+      const next = j.iter || "";
+      if (!next || next === iter || next === "g2gCZAAEbmV4dGQAA2VvZg") break; // 终止符（upyun SDK 约定）
+      iter = next;
     }
     return items;
   }
@@ -151,10 +155,10 @@ export class UssDriver extends CloudBase {
   // HEAD 探测文件/目录元信息；返回 null 表示不存在
   private async head(path: string): Promise<{ is_dir: boolean; size: number; modified: number } | null> {
     const fileKey = getKey(path, false);
-    let r = await this.rest("HEAD", fileKey);
+    let r = await this.rest("HEAD", fileKey, {}, undefined, true);
     if (!r.ok) {
       const dirKey = getKey(path, true);
-      r = await this.rest("HEAD", dirKey);
+      r = await this.rest("HEAD", dirKey, {}, undefined, true);
       if (!r.ok) return null;
       return {
         is_dir: true,
@@ -209,6 +213,7 @@ export class UssDriver extends CloudBase {
   }
 
   async remove(path: string): Promise<void> {
+    if (normalizePath(path) === "/") throw new Error("不能删除根目录");
     const info = await this.head(path);
     if (!info) return;
     const key = getKey(path, info.is_dir);
@@ -218,6 +223,7 @@ export class UssDriver extends CloudBase {
   }
 
   private async moveOrRename(from: string, to: string, isRename: boolean): Promise<void> {
+    if (normalizePath(from) === "/" || normalizePath(to) === "/") throw new Error("不能移动或重命名根目录");
     const fromInfo = await this.head(from);
     if (!fromInfo) throw new Error(`USS: 源不存在 ${from}`);
     const srcKey = getKey(from, fromInfo.is_dir);

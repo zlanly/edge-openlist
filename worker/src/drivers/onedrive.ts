@@ -42,16 +42,21 @@ export class OneDriveDriver extends CloudBase {
   }
 
   async list(path: string): Promise<FileItem[]> {
-    const url = path === "/" ? `${GRAPH}/me/drive/root/children` : `${GRAPH}/me/drive/root:${this.encodePath(path)}:/children`;
-    const j = await this.jsonGet<{ value: any[] }>(url);
-    return (j.value || []).map((it) => ({
-      name: it.name,
-      path: joinPath(path, it.name),
-      is_dir: !!it.folder,
-      size: Number(it.size || 0),
-      modified: it.lastModifiedDateTime ? Date.parse(it.lastModifiedDateTime) : 0,
-      etag: it.etag,
-    }));
+    let next: string | undefined = path === "/" ? `${GRAPH}/me/drive/root/children` : `${GRAPH}/me/drive/root:${this.encodePath(path)}:/children`;
+    const out: FileItem[] = [];
+    while (next) {
+      const j: { value: any[]; "@odata.nextLink"?: string } = await this.jsonGet<{ value: any[]; "@odata.nextLink"?: string }>(next);
+      out.push(...(j.value || []).map((it: any) => ({
+        name: it.name,
+        path: joinPath(path, it.name),
+        is_dir: !!it.folder,
+        size: Number(it.size || 0),
+        modified: it.lastModifiedDateTime ? Date.parse(it.lastModifiedDateTime) : 0,
+        etag: it.etag,
+      })));
+      next = j["@odata.nextLink"];
+    }
+    return out;
   }
 
   async get(path: string): Promise<FileItem> {

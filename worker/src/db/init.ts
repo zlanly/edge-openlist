@@ -76,23 +76,20 @@ async function migrateFileCache(db: D1Database): Promise<void> {
   for (const sql of FILE_CACHE_INDEXES) await db.prepare(sql).run();
 }
 
-let initPromise: Promise<void> | null = null;
+const initPromises = new WeakMap<D1Database, Promise<void>>();
 
 export function initDb(env: Env): Promise<void> {
-  if (!env.DB || typeof (env.DB as any).prepare !== "function") {
-    return Promise.resolve(); // 无 DB 绑定时跳过（纯静态/测试场景）
-  }
-  if (!initPromise) {
-    initPromise = (async () => {
-      const db = env.DB as D1Database;
-      for (const sql of STATEMENTS) {
-        await db.prepare(sql).run();
-      }
-      await migrateFileCache(db);
-    })().catch((e) => {
-      initPromise = null; // 失败则下次请求重试，不永久卡死
-      throw e;
-    });
-  }
-  return initPromise;
+  if (!env.DB || typeof (env.DB as any).prepare !== "function") return Promise.resolve();
+  const db = env.DB as D1Database;
+  const existing = initPromises.get(db);
+  if (existing) return existing;
+  const task = (async () => {
+    for (const sql of STATEMENTS) await db.prepare(sql).run();
+    await migrateFileCache(db);
+  })().catch((e) => {
+    initPromises.delete(db);
+    throw e;
+  });
+  initPromises.set(db, task);
+  return task;
 }

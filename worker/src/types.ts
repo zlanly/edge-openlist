@@ -5,6 +5,8 @@ export interface Env {
   R2: R2Bucket;
   ASSETS: Fetcher;
   JWT_SECRET: string;
+  /** 首次初始化管理员所需的一次性部署密钥。未配置时禁止自动建号。 */
+  BOOTSTRAP_SECRET?: string;
   APP_TITLE: string;
   // 可选：自建 S3 网关等全局配置可在此扩展
 }

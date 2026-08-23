@@ -1,13 +1,14 @@
-// å„äº‘ç›˜é©±åŠ¨çš„è‡ªéªŒè¯ï¼šç”¨å†…å­? KV æ¨¡æ‹Ÿ + å…¨å±€ fetch æ¨¡æ‹Ÿï¼Œæ–­è¨€åˆ—è¡¨è§£æ / ä¸‹è½½ç›´é“¾ / ä»¤ç‰Œåˆ·æ–° / è·¯å¾„è§£æã€?
-// æ³¨æ„ï¼šä»…éªŒè¯é€»è¾‘ä¸? API äº¤äº’ç»“æ„ï¼ŒçœŸå®è”è°ƒéœ€å¯¹åº”è´¦å·å‡­æ®ã€?
+// å„äº‘ç›˜é©±åŠ¨çš„è‡ªéªŒè¯ï¼šç”¨å†…ï¿½? KV æ¨¡æ‹Ÿ + å…¨å±€ fetch æ¨¡æ‹Ÿï¼Œæ–­è¨€åˆ—è¡¨è§£æ / ä¸‹è½½ç›´é“¾ / ä»¤ç‰Œåˆ·æ–° / è·¯å¾„è§£æï¿½?
+// æ³¨æ„ï¼šä»…éªŒè¯é€»è¾‘ï¿½? API äº¤äº’ç»“æ„ï¼ŒçœŸå®è”è°ƒéœ€å¯¹åº”è´¦å·å‡­æ®ï¿½?
 import assert from "node:assert";
 import { OneDriveDriver } from "../worker/src/drivers/onedrive";
 import { GoogleDriveDriver } from "../worker/src/drivers/googledrive";
 import { AliyunDriveDriver } from "../worker/src/drivers/aliyun";
+import { AliyundriveOpenDriver } from "../worker/src/drivers/aliyundrive_open";
 import { QuarkDriveDriver } from "../worker/src/drivers/quark";
 import { P115DriveDriver } from "../worker/src/drivers/p115";
 import { WebDAVDriver } from "../worker/src/drivers/webdav";
-// ĞÂÔöÒÆÖ²Çı¶¯µÄ²âÊÔ
+// ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö²ï¿½ï¿½ï¿½ï¿½ï¿½Ä²ï¿½ï¿½ï¿½
 import { Pan115Driver } from "../worker/src/drivers/115";
 import { BaiduNetdiskDriver } from "../worker/src/drivers/baidu_netdisk";
 import { DropboxDriver } from "../worker/src/drivers/dropbox";
@@ -31,7 +32,7 @@ const kv = new KVMock();
 const env: any = { KV: kv, R2: {}, DB: {}, ASSETS: {}, JWT_SECRET: "x", APP_TITLE: "t" };
 
 const requests: string[] = [];
-const authLog: string[] = []; // ¼ÇÂ¼ Authorization Í·£¬ÓÃÓÚ¶ÏÑÔÇ©Ãû/Bearer
+const authLog: string[] = []; // ï¿½ï¿½Â¼ Authorization Í·ï¿½ï¿½ï¿½ï¿½ï¿½Ú¶ï¿½ï¿½ï¿½Ç©ï¿½ï¿½/Bearer
 function json(body: any, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
@@ -60,10 +61,22 @@ function json(body: any, status = 200) {
     const name = m ? m[1] : "";
     if (name === "Movies") return json({ files: [{ id: "m1" }] });
     if (name === "clip.mp4") return json({ files: [{ id: "f1" }] });
-    // åˆ—ç›®å½?
+    // åˆ—ç›®ï¿½?
     return json({ files: [{ name: "child", mimeType: "application/vnd.google-apps.folder", size: "5", modifiedTime: "2024-01-01T00:00:00Z" }] });
   }
-  // é˜¿é‡Œäº‘ç›˜ä»¤ç‰Œ
+  // é˜¿é‡Œäº‘ç›˜å¼€æ”¾å¹³å°ä»¤ç‰Œä¸æ¥å£
+  if (u.includes("openapi.alipan.com/oauth/access_token")) return json({ access_token: "ali-open-token", refresh_token: "ali-open-refresh", expires_in: 7200 });
+  if (u.includes("openapi.alipan.com/adrive/v1.0/user/getDriveInfo")) return json({ default_drive_id: "drive1", resource_drive_id: "drive1" });
+  if (u.includes("openapi.alipan.com/adrive/v1.0/openFile/list")) {
+    const requestBody = opts.body ? JSON.parse(opts.body) : {};
+    const marker = requestBody.marker || "";
+    return json({ items: marker ? [{ name: "b", type: "file", size: "4", file_id: "b1" }] : [{ name: "a", type: "file", size: "3", updated_at: "2024-01-01T00:00:00Z", file_id: "a1" }, { name: "d", type: "folder", file_id: "d1" }], next_marker: marker ? "" : "next" });
+  }
+  if (u.includes("openapi.alipan.com/adrive/v1.0/openFile/create")) {
+    return json({ file_id: "new-open", upload_id: "upload-open", part_info_list: [{ part_number: 1, upload_url: "https://ali-open/part1" }] });
+  }
+  if (u.includes("openapi.alipan.com/adrive/v1.0/openFile/complete")) return json({});
+  if (u.startsWith("https://ali-open/part")) return new Response(null, { status: 200 });
   if (u.includes("auth.aliyundrive.com")) return json({ access_token: "ali-token", refresh_token: "ali-refresh", expires_in: 7200, default_drive_id: "drive1" });
   if (u.includes("api.aliyundrive.com")) {
     if (u.includes("get_by_path")) return json({ file_id: "f1" });
@@ -96,18 +109,18 @@ function json(body: any, status = 200) {
   }
   // 115
   if (u.includes("webapi.115.com/files")) return json({ data: [{ cid: "1", n: "f.mp4", s: "9", t: "f", ico: "ico_video" }] });
-  // 115 ÏÂÔØµØÖ·
+  // 115 ï¿½ï¿½ï¿½Øµï¿½Ö·
   if (u.includes("proapi.115.com/3.0/files/download")) return json({ data: { url: "https://dl/115file" } });
 
-  // °Ù¶ÈÍøÅÌ£ºÔÚÏßË¢ĞÂ API£¨Ä¬ÈÏ£©
+  // ï¿½Ù¶ï¿½ï¿½ï¿½ï¿½Ì£ï¿½ï¿½ï¿½ï¿½ï¿½Ë¢ï¿½ï¿½ APIï¿½ï¿½Ä¬ï¿½Ï£ï¿½
   if (u.includes("api.oplist.org/baiduyun/renewapi")) return json({ access_token: "bd-token", refresh_token: "bd-refresh", text: "" });
-  // °Ù¶ÈÍøÅÌ£ºÁĞ±í /xpan/file?method=list
+  // ï¿½Ù¶ï¿½ï¿½ï¿½ï¿½Ì£ï¿½ï¿½Ğ±ï¿½ /xpan/file?method=list
   if (u.includes("pan.baidu.com/rest/2.0/xpan/file")) return json({ errno: 0, list: [
     { fs_id: 123, path: "/a.mp4", server_filename: "a.mp4", size: 99, isdir: 0, server_mtime: 1700000000, server_ctime: 1699999999 },
     { fs_id: 456, path: "/docs", server_filename: "docs", size: 0, isdir: 1, server_mtime: 1700000000 },
   ] });
 
-  // Dropbox£ºrefresh_token »»È¡ access_token
+  // Dropboxï¿½ï¿½refresh_token ï¿½ï¿½È¡ access_token
   if (u.includes("api.dropboxapi.com")) {
     if (u.includes("/oauth2/token")) return json({ access_token: "db-token", refresh_token: "db-refresh", expires_in: 3600 });
     if (u.includes("/2/files/list_folder")) return json({ entries: [
@@ -116,7 +129,7 @@ function json(body: any, status = 200) {
     ], cursor: "c", has_more: false });
   }
 
-  // Azure Blob£ºÁĞ±í£¨comp=list£©·µ»Ø XML
+  // Azure Blobï¿½ï¿½ï¿½Ğ±ï¿½ï¿½ï¿½comp=listï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ XML
   if (u.includes("blob.core.windows.net") && u.includes("restype=container") && u.includes("comp=list")) {
     return new Response(
       `<?xml version="1.0"?><EnumerationResults><Blobs>
@@ -128,7 +141,7 @@ function json(body: any, status = 200) {
     );
   }
 
-  // PikPak£ºtoken Ë¢ĞÂ + captcha + ÁĞ±í
+  // PikPakï¿½ï¿½token Ë¢ï¿½ï¿½ + captcha + ï¿½Ğ±ï¿½
   if (u.includes("user.mypikpak.net/v1/auth/token")) return json({ access_token: "pk-token", refresh_token: "pk-refresh", sub: "pk-uid" });
   if (u.includes("user.mypikpak.net/v1/shield/captcha/init")) return json({ captcha_token: "pk-captcha" });
   if (u.includes("api-drive.mypikpak.net/drive/v1/files")) return json({ files: [
@@ -136,7 +149,7 @@ function json(body: any, status = 200) {
     { name: "folderA", kind: "drive#folder", id: "d1" },
   ], next_page_token: "" });
 
-  // 123 ÍøÅÌ£ºµÇÂ¼ + ÁĞ±í
+  // 123 ï¿½ï¿½ï¿½Ì£ï¿½ï¿½ï¿½Â¼ + ï¿½Ğ±ï¿½
   if (u.includes("login.123pan.com/api/user/sign_in")) return json({ code: 200, data: { token: "t123" } });
   if (u.includes("yun.123pan.com/b/api/file/list/new")) return json({ code: 0, data: {
     InfoList: [
@@ -162,12 +175,12 @@ async function test(name: string, fn: () => Promise<void>) {
   authLog.length = 0;
   await fn();
   passed++;
-  console.log("  âœ?", name);
+  console.log("  ï¿½?", name);
 }
 
 async function main() {
   // OneDrive
-  await test("OneDrive åˆ—è¡¨è§£æï¼ˆæ–‡ä»?/ç›®å½•åŒºåˆ†ï¼?", async () => {
+  await test("OneDrive åˆ—è¡¨è§£æï¼ˆæ–‡ï¿½?/ç›®å½•åŒºåˆ†ï¿½?", async () => {
     const d = await mk(OneDriveDriver, { clientId: "c", clientSecret: "s", refreshToken: "rt" });
     const items = await d.list("/");
     assert.equal(items.length, 2);
@@ -181,7 +194,7 @@ async function main() {
     const d = await mk(OneDriveDriver, { clientId: "c", clientSecret: "s", refreshToken: "rt" });
     const res: any = await d.getContent("/a.txt");
     assert.equal(await res.text(), "filedata");
-    assert.ok(kv.store.has("tok:1"), "ä»¤ç‰Œåº”å†™å…? KV");
+    assert.ok(kv.store.has("tok:1"), "ä»¤ç‰Œåº”å†™ï¿½? KV");
   });
   await test("OneDrive ä¸Šä¼ ä¼šè¯è¿”å›ç›´ä¼  URL", async () => {
     const d = await mk(OneDriveDriver, { clientId: "c", clientSecret: "s", refreshToken: "rt" });
@@ -193,8 +206,8 @@ async function main() {
   await test("Google Drive è·¯å¾„è§£æ + åˆ—è¡¨è§£æ", async () => {
     const d = await mk(GoogleDriveDriver, { clientId: "c", clientSecret: "s", refreshToken: "rt" });
     const items = await d.list("/Movies/clip.mp4");
-    // åº”å‘ç”Ÿä¸¤æ¬¡è·¯å¾„è§£æï¼ˆMovies, clip.mp4ï¼?+ ä¸€æ¬¡åˆ—ç›®å½•
-    assert.ok(requests.some((r) => decodeURIComponent(r).includes('name = "Movies"')), "åº”è§£æ? Movies");
+    // åº”å‘ç”Ÿä¸¤æ¬¡è·¯å¾„è§£æï¼ˆMovies, clip.mp4ï¿½?+ ä¸€æ¬¡åˆ—ç›®å½•
+    assert.ok(requests.some((r) => decodeURIComponent(r).includes('name = "Movies"')), "åº”è§£ï¿½? Movies");
     assert.equal(items.length, 1);
     assert.equal(items[0].is_dir, true);
   });
@@ -204,8 +217,25 @@ async function main() {
     assert.equal(await res.text(), "gdata");
   });
 
+  // é˜¿é‡Œäº‘ç›˜å¼€æ”¾é©±åŠ¨
+  await test("é˜¿é‡Œäº‘ç›˜å¼€æ”¾é©±åŠ¨åˆ†é¡µåˆ—è¡¨ä¸å¼€æ”¾ API åˆ·æ–°", async () => {
+    const d = await mk(AliyundriveOpenDriver, { refresh_token: "rt", use_online_api: false, client_id: "cid", client_secret: "sec" }, 21);
+    const items = await d.list("/");
+    assert.equal(items.length, 3);
+    assert.equal(items[0].name, "a");
+    assert.equal(items[1].is_dir, true);
+    assert.equal(items[2].name, "b");
+    assert.ok(requests.some((r) => r.includes("openFile/list")), "åº”è°ƒç”¨å¼€æ”¾å¹³å°åˆ—è¡¨æ¥å£");
+    assert.ok(kv.store.has("tok:21"), "å¼€æ”¾å¹³å°ä»¤ç‰Œåº”å†™å…¥ KV");
+  });
+  await test("é˜¿é‡Œäº‘ç›˜å¼€æ”¾é©±åŠ¨æ‹’ç»è¶…å‡ºå£°æ˜å¤§å°çš„ä¸Šä¼ ", async () => {
+    const d = await mk(AliyundriveOpenDriver, { refresh_token: "rt", use_online_api: false, client_id: "cid", client_secret: "sec" }, 22);
+    const stream = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new TextEncoder().encode("too-large")); c.close(); } });
+    await assert.rejects(() => d.putContent("/up.mp4", stream as any, "application/octet-stream", 1), /è¶…è¿‡å£°æ˜çš„æ–‡ä»¶å¤§å°/);
+  });
+
   // é˜¿é‡Œäº‘ç›˜
-  await test("é˜¿é‡Œäº‘ç›˜ åˆ—è¡¨è§£æï¼ˆæ–‡ä»?/ç›®å½•ï¼?", async () => {
+  await test("é˜¿é‡Œäº‘ç›˜ åˆ—è¡¨è§£æï¼ˆæ–‡ï¿½?/ç›®å½•ï¿½?", async () => {
     const d = await mk(AliyunDriveDriver, { refreshToken: "rt" });
     const items = await d.list("/");
     assert.equal(items.length, 2);
@@ -220,7 +250,7 @@ async function main() {
   });
 
   // å¤¸å…‹
-  await test("å¤¸å…‹ åˆ—è¡¨è§£æï¼ˆfile_type åˆ¤å®šæ–‡ä»¶ï¼?", async () => {
+  await test("å¤¸å…‹ åˆ—è¡¨è§£æï¼ˆfile_type åˆ¤å®šæ–‡ä»¶ï¿½?", async () => {
     const d = await mk(QuarkDriveDriver, { cookie: "k=1" });
     const items = await d.list("/");
     assert.equal(items.length, 1);
@@ -230,7 +260,7 @@ async function main() {
   });
 
   // 115
-  await test("115 ÁĞ±í½âÎö£¨t ÅĞ¶¨ÎÄ¼ş£©", async () => {
+  await test("115 ï¿½Ğ±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½t ï¿½Ğ¶ï¿½ï¿½Ä¼ï¿½ï¿½ï¿½", async () => {
     const d = await mk(P115DriveDriver, { cookie: "uid=1" });
     const items = await d.list("/");
     assert.equal(items.length, 1);
@@ -239,17 +269,17 @@ async function main() {
     assert.equal(items[0].size, 9);
   });
 
-  // ---------- ĞÂÔö£º¸ÕÒÆÖ²Çı¶¯µÄÁĞ±í½âÎö / ÁîÅÆË¢ĞÂ / ÏÂÔØ´úÀí ----------
-  // 115£¨ĞÂ Pan115Driver£©£ºÏÂÔØÖ±Á´´úÀí
-  await test("115 ÏÂÔØÖ±Á´´úÀí£¨getContent ×ª·¢µ½ÉÏÓÎ£©", async () => {
+  // ---------- ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö²ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ğ±ï¿½ï¿½ï¿½ï¿½ï¿½ / ï¿½ï¿½ï¿½ï¿½Ë¢ï¿½ï¿½ / ï¿½ï¿½ï¿½Ø´ï¿½ï¿½ï¿½ ----------
+  // 115ï¿½ï¿½ï¿½ï¿½ Pan115Driverï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+  await test("115 ï¿½ï¿½ï¿½ï¿½Ö±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½getContent ×ªï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Î£ï¿½", async () => {
     const d = await mk(Pan115Driver, { cookie: "uid=1" }, 11);
     const res: any = await d.getContent("/f.mp4");
     assert.equal(await res.text(), "filedata");
-    assert.ok(requests.some((r) => r.includes("proapi.115.com/3.0/files/download")), "Ó¦ÇëÇó 115 ÏÂÔØµØÖ·½Ó¿Ú");
+    assert.ok(requests.some((r) => r.includes("proapi.115.com/3.0/files/download")), "Ó¦ï¿½ï¿½ï¿½ï¿½ 115 ï¿½ï¿½ï¿½Øµï¿½Ö·ï¿½Ó¿ï¿½");
   });
 
-  // °Ù¶ÈÍøÅÌ£ºÁĞ±í½âÎö + ÁîÅÆĞ´Èë KV
-  await test("°Ù¶ÈÍøÅÌ ÁĞ±í½âÎö£¨server_filename/isdir£©+ ÁîÅÆĞ´Èë KV", async () => {
+  // ï¿½Ù¶ï¿½ï¿½ï¿½ï¿½Ì£ï¿½ï¿½Ğ±ï¿½ï¿½ï¿½ï¿½ï¿½ + ï¿½ï¿½ï¿½ï¿½Ğ´ï¿½ï¿½ KV
+  await test("ï¿½Ù¶ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½Ğ±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½server_filename/isdirï¿½ï¿½+ ï¿½ï¿½ï¿½ï¿½Ğ´ï¿½ï¿½ KV", async () => {
     const d = await mk(BaiduNetdiskDriver, { refreshToken: "rt" }, 2);
     const items = await d.list("/");
     assert.equal(items.length, 2);
@@ -258,11 +288,11 @@ async function main() {
     assert.equal(items[0].size, 99);
     assert.equal(items[1].name, "docs");
     assert.equal(items[1].is_dir, true);
-    assert.ok(kv.store.has("tok:2"), "Ë¢ĞÂÁîÅÆÓ¦Ğ´Èë KV");
+    assert.ok(kv.store.has("tok:2"), "Ë¢ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ó¦Ğ´ï¿½ï¿½ KV");
   });
 
-  // Dropbox£ºÁĞ±í½âÎö£¨POST list_folder£¬entries[].tag/.size/path_display£©+ ÁîÅÆĞ´Èë KV
-  await test("Dropbox ÁĞ±í½âÎö£¨.tag ÅĞ¶¨Ä¿Â¼£©+ ÁîÅÆĞ´Èë KV", async () => {
+  // Dropboxï¿½ï¿½ï¿½Ğ±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½POST list_folderï¿½ï¿½entries[].tag/.size/path_displayï¿½ï¿½+ ï¿½ï¿½ï¿½ï¿½Ğ´ï¿½ï¿½ KV
+  await test("Dropbox ï¿½Ğ±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½.tag ï¿½Ğ¶ï¿½Ä¿Â¼ï¿½ï¿½+ ï¿½ï¿½ï¿½ï¿½Ğ´ï¿½ï¿½ KV", async () => {
     const d = await mk(DropboxDriver, { client_id: "c", client_secret: "s", refresh_token: "rt" }, 3);
     const items = await d.list("/");
     assert.equal(items.length, 2);
@@ -272,23 +302,23 @@ async function main() {
     assert.equal(items[1].name, "photos");
     assert.equal(items[1].is_dir, true);
     assert.ok(requests.some((r) => r.includes("/2/files/list_folder")), "Ó¦ POST list_folder");
-    assert.ok(kv.store.has("tok:3"), "Ë¢ĞÂÁîÅÆÓ¦Ğ´Èë KV");
+    assert.ok(kv.store.has("tok:3"), "Ë¢ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ó¦Ğ´ï¿½ï¿½ KV");
   });
 
-  // Azure Blob£ºÁĞ±í XML ½âÎö + SharedKey Ç©ÃûÍ·
-  await test("Azure Blob ÁĞ±í XML ½âÎö£¨BlobPrefix/Blob£©+ SharedKey Ç©ÃûÍ·", async () => {
+  // Azure Blobï¿½ï¿½ï¿½Ğ±ï¿½ XML ï¿½ï¿½ï¿½ï¿½ + SharedKey Ç©ï¿½ï¿½Í·
+  await test("Azure Blob ï¿½Ğ±ï¿½ XML ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½BlobPrefix/Blobï¿½ï¿½+ SharedKey Ç©ï¿½ï¿½Í·", async () => {
     const d = await mk(AzureBlobDriver, { endpoint: "myacct", container_name: "mycontainer", access_key: "dGVzdGtleQ==" }, 4);
     const items = await d.list("/");
     const dir = items.find((i) => i.name === "docs");
     const file = items.find((i) => i.name === "root.mp4");
     assert.ok(dir && dir.is_dir, "docs Ó¦ÎªÄ¿Â¼");
-    assert.ok(file && !file.is_dir && file.size === 20, "root.mp4 Ó¦ÎªÎÄ¼şÇÒ size=20");
-    assert.ok(requests.some((r) => r.includes("restype=container") && r.includes("comp=list")), "Ó¦Îª list ½Ó¿Ú");
-    assert.ok(authLog.some((h) => h.startsWith("SharedKey ")), "Ó¦´ø SharedKey Ç©ÃûÍ·");
+    assert.ok(file && !file.is_dir && file.size === 20, "root.mp4 Ó¦Îªï¿½Ä¼ï¿½ï¿½ï¿½ size=20");
+    assert.ok(requests.some((r) => r.includes("restype=container") && r.includes("comp=list")), "Ó¦Îª list ï¿½Ó¿ï¿½");
+    assert.ok(authLog.some((h) => h.startsWith("SharedKey ")), "Ó¦ï¿½ï¿½ SharedKey Ç©ï¿½ï¿½Í·");
   });
 
-  // Virtual£ºÄÚÁª tree ÁĞ±í½âÎö
-  await test("Virtual ÄÚÁª tree ÁĞ±í½âÎö", async () => {
+  // Virtualï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ tree ï¿½Ğ±ï¿½ï¿½ï¿½ï¿½ï¿½
+  await test("Virtual ï¿½ï¿½ï¿½ï¿½ tree ï¿½Ğ±ï¿½ï¿½ï¿½ï¿½ï¿½", async () => {
     const d = await mk(VirtualDriver, {
       tree: {
         is_dir: true,
@@ -300,15 +330,15 @@ async function main() {
     }, 5);
     const items = await d.list("/");
     assert.equal(items.length, 2);
-    assert.ok(items.some((i) => i.name === "file.txt" && !i.is_dir), "file.txt Ó¦ÎªÎÄ¼ş");
+    assert.ok(items.some((i) => i.name === "file.txt" && !i.is_dir), "file.txt Ó¦Îªï¿½Ä¼ï¿½");
     assert.ok(items.some((i) => i.name === "sub" && i.is_dir), "sub Ó¦ÎªÄ¿Â¼");
     const inner = await d.list("/sub");
     assert.equal(inner.length, 1);
     assert.equal(inner[0].name, "inner.txt");
   });
 
-  // UrlTree£ºÎÄ±¾Ê÷ÁĞ±í½âÎö
-  await test("UrlTree ÎÄ±¾Ê÷ÁĞ±í½âÎö£¨Ëõ½ø²ã¼¶ + ÎÄ¼şĞÅÏ¢£©", async () => {
+  // UrlTreeï¿½ï¿½ï¿½Ä±ï¿½ï¿½ï¿½ï¿½Ğ±ï¿½ï¿½ï¿½ï¿½ï¿½
+  await test("UrlTree ï¿½Ä±ï¿½ï¿½ï¿½ï¿½Ğ±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ã¼¶ + ï¿½Ä¼ï¿½ï¿½ï¿½Ï¢ï¿½ï¿½", async () => {
     const d = await mk(UrlTreeDriver, {
       url_structure: "movies:\n  clip.mp4:1024:https://dl/clip.mp4\nreadme.txt:https://dl/readme.txt",
     }, 6);
@@ -316,15 +346,15 @@ async function main() {
     assert.equal(items.length, 2);
     assert.ok(items.some((i) => i.name === "movies" && i.is_dir), "movies Ó¦ÎªÄ¿Â¼");
     const readme = items.find((i) => i.name === "readme.txt");
-    assert.ok(readme && !readme.is_dir && readme.size === 0, "readme.txt Ó¦ÎªÎÄ¼ş");
+    assert.ok(readme && !readme.is_dir && readme.size === 0, "readme.txt Ó¦Îªï¿½Ä¼ï¿½");
     const movies = await d.list("/movies");
     assert.equal(movies.length, 1);
     assert.equal(movies[0].name, "clip.mp4");
     assert.equal(movies[0].size, 1024);
   });
 
-  // PikPak£ºOAuth Ë¢ĞÂ + ÁĞ±í½âÎö + ÁîÅÆĞ´Èë KV
-  await test("PikPak ÁîÅÆË¢ĞÂ + ÁĞ±í½âÎö£¨kind ÅĞ¶¨Ä¿Â¼£©+ ÁîÅÆĞ´Èë KV", async () => {
+  // PikPakï¿½ï¿½OAuth Ë¢ï¿½ï¿½ + ï¿½Ğ±ï¿½ï¿½ï¿½ï¿½ï¿½ + ï¿½ï¿½ï¿½ï¿½Ğ´ï¿½ï¿½ KV
+  await test("PikPak ï¿½ï¿½ï¿½ï¿½Ë¢ï¿½ï¿½ + ï¿½Ğ±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½kind ï¿½Ğ¶ï¿½Ä¿Â¼ï¿½ï¿½+ ï¿½ï¿½ï¿½ï¿½Ğ´ï¿½ï¿½ KV", async () => {
     const d = await mk(PikPakDriver, { refresh_token: "rt" }, 7);
     const items = await d.list("/");
     assert.equal(items.length, 2);
@@ -333,12 +363,12 @@ async function main() {
     assert.equal(items[0].size, 55);
     assert.equal(items[1].name, "folderA");
     assert.equal(items[1].is_dir, true);
-    assert.ok(requests.some((r) => r.includes("/v1/auth/token")), "Ó¦Ë¢ĞÂ token");
-    assert.ok(kv.store.has("tok:7"), "ÁîÅÆÓ¦Ğ´Èë KV");
+    assert.ok(requests.some((r) => r.includes("/v1/auth/token")), "Ó¦Ë¢ï¿½ï¿½ token");
+    assert.ok(kv.store.has("tok:7"), "ï¿½ï¿½ï¿½ï¿½Ó¦Ğ´ï¿½ï¿½ KV");
   });
 
-  // 123 ÍøÅÌ£ºµÇÂ¼ + ÁĞ±í½âÎö + ÁîÅÆĞ´Èë KV
-  await test("123 ÍøÅÌ µÇÂ¼ + ÁĞ±í½âÎö£¨Type ÅĞ¶¨Ä¿Â¼£©+ ÁîÅÆĞ´Èë KV", async () => {
+  // 123 ï¿½ï¿½ï¿½Ì£ï¿½ï¿½ï¿½Â¼ + ï¿½Ğ±ï¿½ï¿½ï¿½ï¿½ï¿½ + ï¿½ï¿½ï¿½ï¿½Ğ´ï¿½ï¿½ KV
+  await test("123 ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½Â¼ + ï¿½Ğ±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Type ï¿½Ğ¶ï¿½Ä¿Â¼ï¿½ï¿½+ ï¿½ï¿½ï¿½ï¿½Ğ´ï¿½ï¿½ KV", async () => {
     const d = await mk(Pan123Driver, { username: "u", password: "p" }, 8);
     const items = await d.list("/");
     assert.equal(items.length, 2);
@@ -347,12 +377,12 @@ async function main() {
     assert.equal(items[0].size, 123);
     assert.equal(items[1].name, "dir");
     assert.equal(items[1].is_dir, true);
-    assert.ok(requests.some((r) => r.includes("login.123pan.com/api/user/sign_in")), "Ó¦ÏÈµÇÂ¼");
-    assert.ok(kv.store.has("tok:8"), "ÁîÅÆÓ¦Ğ´Èë KV");
+    assert.ok(requests.some((r) => r.includes("login.123pan.com/api/user/sign_in")), "Ó¦ï¿½Èµï¿½Â¼");
+    assert.ok(kv.store.has("tok:8"), "ï¿½ï¿½ï¿½ï¿½Ó¦Ğ´ï¿½ï¿½ KV");
   });
 
   // WebDAV
-  await test("WebDAV ÁĞ±í XML ½âÎö", async () => {
+  await test("WebDAV ï¿½Ğ±ï¿½ XML ï¿½ï¿½ï¿½ï¿½", async () => {
     const d = await mk(WebDAVDriver, { endpoint: "https://dav.example.com", username: "u", password: "p" });
     const items = await d.list("/");
     assert.equal(items.length, 2);
@@ -362,7 +392,7 @@ async function main() {
     assert.equal(items[1].name, "folder");
     assert.equal(items[1].is_dir, true);
   });
-  await test("WebDAV ´úÀíÉÏ´«£¨Á÷Ê½×ª·¢µ½ÉÏÓÎ£©", async () => {
+  await test("WebDAV ï¿½ï¿½ï¿½ï¿½ï¿½Ï´ï¿½ï¿½ï¿½ï¿½ï¿½Ê½×ªï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Î£ï¿½", async () => {
     const d = await mk(WebDAVDriver, { endpoint: "https://dav.example.com", username: "u", password: "p" });
     requests.length = 0;
     const stream = new ReadableStream<Uint8Array>({
@@ -372,11 +402,11 @@ async function main() {
       },
     });
     await d.putContent!("/file.txt", stream as any, "text/plain");
-    assert.ok(requests.includes("PUT-BODY-RECEIVED"), "Worker Ó¦½«ÇëÇóÌå×ª·¢µ½ WebDAV ÉÏÓÎ");
+    assert.ok(requests.includes("PUT-BODY-RECEIVED"), "Worker Ó¦ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½×ªï¿½ï¿½ï¿½ï¿½ WebDAV ï¿½ï¿½ï¿½ï¿½");
   });
 
-  // °¢ÀïÔÆÅÌ·ÖÆ¬ÉÏ´«´úÀí
-  await test("°¢ÀïÔÆÅÌ ·ÖÆ¬ÉÏ´«£¨create¡úPUT ·ÖÆ¬¡úcomplete£©", async () => {
+  // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ì·ï¿½Æ¬ï¿½Ï´ï¿½ï¿½ï¿½ï¿½ï¿½
+  await test("ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½Æ¬ï¿½Ï´ï¿½ï¿½ï¿½createï¿½ï¿½PUT ï¿½ï¿½Æ¬ï¿½ï¿½completeï¿½ï¿½", async () => {
     const d = await mk(AliyunDriveDriver, { refreshToken: "rt" });
     requests.length = 0;
     const stream = new ReadableStream<Uint8Array>({
@@ -386,15 +416,15 @@ async function main() {
       },
     });
     await d.putContent!("/up.mp4", stream as any, "application/octet-stream", 12);
-    assert.ok(requests.some((r) => r.includes("v2/file/create")), "Ó¦´´½¨ÎÄ¼şÌõÄ¿");
-    assert.ok(requests.some((r) => r.startsWith("PUT https://ali/part")), "Ó¦ PUT ÉÏ´«·ÖÆ¬");
-    assert.ok(requests.some((r) => r.includes("v2/file/complete")), "Ó¦Íê³ÉÉÏ´«");
+    assert.ok(requests.some((r) => r.includes("v2/file/create")), "Ó¦ï¿½ï¿½ï¿½ï¿½ï¿½Ä¼ï¿½ï¿½ï¿½Ä¿");
+    assert.ok(requests.some((r) => r.startsWith("PUT https://ali/part")), "Ó¦ PUT ï¿½Ï´ï¿½ï¿½ï¿½Æ¬");
+    assert.ok(requests.some((r) => r.includes("v2/file/complete")), "Ó¦ï¿½ï¿½ï¿½ï¿½Ï´ï¿½");
   });
 
-  console.log(`\nÈ«²¿ ${passed} Ïî×ÔÑéÖ¤Í¨¹ı ?`);
+  console.log(`\nÈ«ï¿½ï¿½ ${passed} ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö¤Í¨ï¿½ï¿½ ?`);
 }
 
 main().catch((e) => {
-  console.error("æµ‹è¯•å¤±è´¥ï¼?", e);
+  console.error("æµ‹è¯•å¤±è´¥ï¿½?", e);
   process.exit(1);
 });

@@ -47,12 +47,13 @@ export class AliyundriveShareDriver extends CloudBase {
     const body: Record<string, string> = { share_id: this.cfgStr("share_id") };
     if (this.cfgStr("share_pwd")) body.share_pwd = this.cfgStr("share_pwd");
     const r = await fetch(`${API}/v2/share_link/get_share_token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...CANARY },
-      body: JSON.stringify(body),
+      method: "POST", headers: { "Content-Type": "application/json", ...CANARY }, body: JSON.stringify(body),
     });
-    const j = (await r.json()) as any;
+    const text = await r.text();
+    if (!r.ok) throw new Error(`获取分享令牌失败 HTTP ${r.status}: ${text.slice(0, 300)}`);
+    let j: any; try { j = JSON.parse(text); } catch { throw new Error("获取分享令牌返回格式错误"); }
     if (j.code) throw new Error(`获取分享令牌失败: ${j.message}`);
+    if (!j.share_token) throw new Error("获取分享令牌失败：响应缺少 share_token");
     this.shareToken = j.share_token;
   }
 
@@ -66,26 +67,42 @@ export class AliyundriveShareDriver extends CloudBase {
   }
 
   private async api(url: string, body: unknown): Promise<any> {
-    await this.ensureShareToken();
-    const r = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(await this.hdrs()) },
-      body: JSON.stringify(body),
-    });
-    const j = (await r.json()) as any;
-    if (j.code === "AccessTokenInvalid") {
-      const t = await loadTokens(this.env.KV, this.mountId);
-      if (t) await saveTokens(this.env.KV, this.mountId, { ...t, access_token: "", expires_at: 0 });
-      await this.ensureToken();
-      return this.api(url, body);
-    }
-    if (j.code === "ShareLinkTokenInvalid") {
-      this.shareToken = "";
+    for (let attempt = 0; attempt < 2; attempt++) {
       await this.ensureShareToken();
-      return this.api(url, body);
+      const r = await fetch(url, {
+        method: "POST", headers: { "Content-Type": "application/json", ...(await this.hdrs()) }, body: JSON.stringify(body),
+      });
+      const text = await r.text();
+      if (!r.ok) throw new Error(`阿里云盘分享接口 HTTP ${r.status}: ${text.slice(0, 500)}`);
+      let j: any; try { j = JSON.parse(text); } catch { throw new Error("阿里云盘分享接口返回格式错误"); }
+      if (j.code === "AccessTokenInvalid" && attempt === 0) {
+        const t = await loadTokens(this.env.KV, this.mountId);
+        if (t) await saveTokens(this.env.KV, this.mountId, { ...t, access_token: "", expires_at: 0 });
+        this.accessToken = "";
+        continue;
+      }
+      if (j.code === "ShareLinkTokenInvalid" && attempt === 0) { this.shareToken = ""; continue; }
+      if (j.code) throw new Error(`${j.code}: ${j.message}`);
+      return j;
     }
-    if (j.code) throw new Error(`${j.code}: ${j.message}`);
-    return j;
+    throw new Error("阿里云盘分享令牌刷新后仍然无效");
+  }
+
+  private async listAll(parentFileId: string): Promise<any[]> {
+    const items: any[] = [];
+    let marker = "";
+    do {
+      const data = await this.api(`${API}/adrive/v3/file/list`, {
+        limit: 200, order_by: this.cfgStr("order_by") || "name", order_direction: this.cfgStr("order_direction") || "ASC",
+        parent_file_id: parentFileId, share_id: this.cfgStr("share_id"), marker,
+      });
+      const page = Array.isArray(data.items) ? data.items : [];
+      items.push(...page);
+      const next = String(data.next_marker || data.marker || "");
+      if (!next || next === marker || page.length === 0) break;
+      marker = next;
+    } while (marker);
+    return items;
   }
 
   private rootId(): string {
@@ -98,18 +115,7 @@ export class AliyundriveShareDriver extends CloudBase {
     const parts = normalizePath(path).split("/").filter(Boolean);
     let id = this.rootId();
     for (const name of parts) {
-      const data = await this.api(`${API}/adrive/v3/file/list`, {
-        image_thumbnail_process: "image/resize,w_160/format,jpeg",
-        image_url_process: "image/resize,w_1920/format,jpeg",
-        limit: 200,
-        order_by: this.cfgStr("order_by") || "name",
-        order_direction: this.cfgStr("order_direction") || "ASC",
-        parent_file_id: id,
-        share_id: this.cfgStr("share_id"),
-        video_thumbnail_process: "video/snapshot,t_1000,f_jpg,ar_auto,w_300",
-        marker: "",
-      });
-      const item = (data.items || []).find((f: any) => f.name === name);
+      const item = (await this.listAll(id)).find((f: any) => f.name === name);
       if (!item) throw new Error(`路径不存在: ${path}`);
       id = item.file_id;
       if (!this.driveId && item.drive_id) this.driveId = item.drive_id;
@@ -119,45 +125,18 @@ export class AliyundriveShareDriver extends CloudBase {
 
   async list(path: string): Promise<FileItem[]> {
     const id = await this.resolveId(path);
-    const data = await this.api(`${API}/adrive/v3/file/list`, {
-      limit: 200,
-      order_by: this.cfgStr("order_by") || "name",
-      order_direction: this.cfgStr("order_direction") || "ASC",
-      parent_file_id: id,
-      share_id: this.cfgStr("share_id"),
-      marker: "",
-    });
-    return (data.items || []).map((f: any) => ({
-      name: f.name,
-      path: joinPath(path, f.name),
-      is_dir: f.type === "folder",
-      size: Number(f.size || 0),
-      modified: f.updated_at ? Date.parse(f.updated_at) : 0,
-      etag: f.file_id,
+    return (await this.listAll(id)).map((f: any) => ({
+      name: f.name, path: joinPath(path, f.name), is_dir: f.type === "folder", size: Number(f.size || 0),
+      modified: f.updated_at ? Date.parse(f.updated_at) : 0, etag: f.file_id,
     }));
   }
 
   async get(path: string): Promise<FileItem> {
-    if (path === "/") {
-      return { name: "", path: "/", is_dir: true, size: 0, modified: 0 };
-    }
+    if (path === "/") return { name: "", path: "/", is_dir: true, size: 0, modified: 0 };
     const id = await this.resolveId(path);
-    const data = await this.api(`${API}/adrive/v3/file/list`, {
-      limit: 200,
-      parent_file_id: await this.resolveId(parentPath(path)),
-      share_id: this.cfgStr("share_id"),
-      marker: "",
-    });
-    const f = (data.items || []).find((x: any) => x.file_id === id);
+    const f = (await this.listAll(await this.resolveId(parentPath(path)))).find((x: any) => x.file_id === id);
     if (!f) throw new Error(`文件不存在: ${path}`);
-    return {
-      name: f.name,
-      path,
-      is_dir: f.type === "folder",
-      size: Number(f.size || 0),
-      modified: f.updated_at ? Date.parse(f.updated_at) : 0,
-      etag: f.file_id,
-    };
+    return { name: f.name, path, is_dir: f.type === "folder", size: Number(f.size || 0), modified: f.updated_at ? Date.parse(f.updated_at) : 0, etag: f.file_id };
   }
 
   async getContent(path: string, range?: string): Promise<Response | string> {

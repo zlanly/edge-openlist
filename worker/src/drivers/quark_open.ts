@@ -53,19 +53,26 @@ export class QuarkOpenDriver extends CloudBase {
   // ---- 签名头：x-pan-tm / x-pan-token / x-pan-client-id ----
   private async signedHeaders(method: string, pathname: string): Promise<Record<string, string>> {
     await this.ensureToken();
-    if (!this.userId) {
-      const info = await this.jsonGet<{ data: { user_id: string } }>(`${API}/open/v1/user/info?access_token=${this.accessToken}`);
-      this.userId = info.data.user_id;
-    }
-    const ts = String(Date.now());
-    const token = await sha256Hex(`${method}&${pathname}&${ts}&${this.signKey}`);
-    return {
-      Accept: "application/json, text/plain, */*",
-      "User-Agent": "go-resty/3.0.0-beta.1 (https://resty.dev)",
-      "x-pan-tm": ts,
-      "x-pan-token": token,
-      "x-pan-client-id": this.appId,
+    const makeHeaders = async () => {
+      const ts = String(Date.now());
+      const token = await sha256Hex(`${method}&${pathname}&${ts}&${this.signKey}`);
+      return {
+        Accept: "application/json, text/plain, */*",
+        "User-Agent": "go-resty/3.0.0-beta.1 (https://resty.dev)",
+        "x-pan-tm": ts,
+        "x-pan-token": token,
+        "x-pan-client-id": this.appId,
+      };
     };
+    if (!this.userId) {
+      const infoHeaders = await makeHeaders();
+      const info = await fetch(`${API}/open/v1/user/info?access_token=${encodeURIComponent(this.accessToken)}`, { headers: infoHeaders });
+      if (!info.ok) throw new Error(`quark_open 用户信息失败 ${info.status}`);
+      const data = (await info.json()) as { data?: { user_id?: string } };
+      if (!data.data?.user_id) throw new Error("quark_open 用户信息缺少 user_id");
+      this.userId = data.data.user_id;
+    }
+    return makeHeaders();
   }
 
   protected async hdrs(): Promise<Record<string, string>> {
@@ -102,11 +109,18 @@ export class QuarkOpenDriver extends CloudBase {
     if (path === "/") return "0";
     let pdir = "0";
     for (const seg of path.split("/").filter(Boolean)) {
-      const j = await this.gpost<{ data: { file_list: any[]; last_page: boolean; next_query_cursor: any } }>(
-        "/open/v1/file/list",
-        { parent_fid: pdir, size: 100, sort: "file_name:asc" }
-      );
-      const item = (j.data.file_list || []).find((f) => f.filename === seg);
+      let cursor: any = undefined;
+      let item: any;
+      for (;;) {
+        const body: any = { parent_fid: pdir, size: 100, sort: "file_name:asc" };
+        if (cursor) body.query_cursor = cursor;
+        const j = await this.gpost<{ data: { file_list: any[]; last_page: boolean; next_query_cursor: any } }>("/open/v1/file/list", body);
+        item = (j.data.file_list || []).find((f) => f.filename === seg);
+        if (item || j.data.last_page) break;
+        const next = j.data.next_query_cursor;
+        if (!next || next === cursor) break;
+        cursor = next;
+      }
       if (!item) throw new Error(`quark_open: 路径不存在 ${path}`);
       pdir = item.fid;
     }

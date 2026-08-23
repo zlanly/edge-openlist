@@ -41,13 +41,23 @@ export class Pan115Driver extends CloudBase {
     return it.t === "d" || it.ico === "d" || it.ico === "ico_dir" || it.is_dir === 1;
   }
 
+  private async listFolder(cid: string): Promise<any[]> {
+    const out: any[] = [];
+    for (let offset = 0;;) {
+      const j = await this.jsonGet<{ data: any[] }>(`${LIST}?cid=${cid}&o=file_name&asc=1&limit=200&offset=${offset}`);
+      const page = j.data || [];
+      out.push(...page);
+      if (page.length < 200) break;
+      offset += page.length;
+    }
+    return out;
+  }
+
   private async resolveCid(path: string): Promise<string> {
     if (path === "/") return "0";
     let cid = "0";
     for (const seg of path.split("/").filter(Boolean)) {
-      const url = `${LIST}?cid=${cid}&o=file_name&asc=1&limit=200&offset=0`;
-      const j = await this.jsonGet<{ data: any[] }>(url);
-      const item = (j.data || []).find((f) => f.n === seg);
+      const item = (await this.listFolder(cid)).find((f) => f.n === seg);
       if (!item) throw new Error(`路径不存在: ${path}`);
       cid = item.cid;
     }
@@ -55,9 +65,8 @@ export class Pan115Driver extends CloudBase {
   }
 
   async list(path: string): Promise<FileItem[]> {
-    const cid = await this.resolveCid(path);
-    const j = await this.jsonGet<{ data: any[] }>(`${LIST}?cid=${cid}&o=file_name&asc=1&limit=200&offset=0`);
-    return (j.data || []).map((it) => ({
+    const items = await this.listFolder(await this.resolveCid(path));
+    return items.map((it) => ({
       name: it.n,
       path: joinPath(path, it.n),
       is_dir: this.isDir(it),
@@ -68,8 +77,12 @@ export class Pan115Driver extends CloudBase {
   }
 
   async get(path: string): Promise<FileItem> {
-    const cid = await this.resolveCid(path);
-    return { name: basename(path), path, is_dir: false, size: 0, modified: 0, etag: cid };
+    if (path === "/") return { name: "", path: "/", is_dir: true, size: 0, modified: 0, etag: "0" };
+    const parent = path.split("/").slice(0, -1).join("/") || "/";
+    const cid = await this.resolveCid(parent);
+    const item = (await this.listFolder(cid)).find((f) => f.n === basename(path));
+    if (!item) throw new Error(`路径不存在: ${path}`);
+    return { name: item.n, path, is_dir: this.isDir(item), size: Number(item.s || 0), modified: item.last_ctime ? Date.parse(item.last_ctime) : 0, etag: item.cid };
   }
 
   async getContent(path: string, range?: string): Promise<Response | string> {

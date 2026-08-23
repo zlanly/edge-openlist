@@ -125,15 +125,23 @@ export class CloudreveDriver extends CloudBase {
     const etags: string[] = [];
     let finish = 0;
     let chunk = 0;
+    let carry = new Uint8Array(0);
     for (;;) {
       const buf = new Uint8Array(chunkSize);
       let off = 0;
       while (off < chunkSize) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!value) continue;
-        buf.set(value, off);
-        off += value.length;
+        let value: Uint8Array;
+        if (carry.length) { value = carry; carry = new Uint8Array(0); }
+        else {
+          const next = await reader.read();
+          if (next.done) break;
+          value = next.value;
+        }
+        if (!value.length) continue;
+        const take = Math.min(value.length, chunkSize - off);
+        buf.set(value.subarray(0, take), off);
+        off += take;
+        if (take < value.length) carry = value.slice(take);
       }
       if (off === 0) break;
       const piece = buf.slice(0, off);
@@ -169,11 +177,12 @@ export class CloudreveDriver extends CloudBase {
       finish += off;
       chunk++;
     }
+    if (finish !== size) throw new Error(`Cloudreve 上传大小不一致：声明 ${size}，实际 ${finish}`);
     if (policyType === "s3" || policyType === "ks3") {
       let xml = "<CompleteMultipartUpload>";
       etags.forEach((e, i) => (xml += `<Part><PartNumber>${i + 1}</PartNumber><ETag>${e}</ETag></Part>`));
       xml += "</CompleteMultipartUpload>";
-      const r = await fetch(u.completeURL, { method: "POST", headers: { "Content-Type": "application/xml", "User-Agent": this.ua }, body: xml });
+      const r = await fetch(u.complete_url, { method: "POST", headers: { "Content-Type": "application/xml", "User-Agent": this.ua }, body: xml });
       if (!r.ok) throw new Error(`Cloudreve S3 完成失败: ${r.status}`);
       await this.api("GET", `/callback/s3/${u.sessionID}`);
     } else if (policyType === "onedrive") {

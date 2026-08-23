@@ -11,7 +11,12 @@ const oauth = new Hono<AppEnv>();
 // 暴露支持的 OAuth provider 列表（前端据此显示"启动授权"按钮）—— 需管理员
 oauth.get("/providers", adminMiddleware, (c) => c.json({ providers: OAUTH_PROVIDER_IDS }));
 
-// 发起授权：返回平台登录页 URL（state=挂载ID），由前端在弹出窗口打开
+function createState(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(24));
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+// 发起授权：生成一次性 state 并绑定挂载与服务商，由前端在弹出窗口打开
 oauth.get("/:provider/start", adminMiddleware, async (c) => {
   const provider = c.req.param("provider");
   const def = OAUTH_PROVIDERS[provider];
@@ -23,12 +28,15 @@ oauth.get("/:provider/start", adminMiddleware, async (c) => {
   if (!mount) return c.json({ error: "挂载不存在" }, 404);
   const cfg = JSON.parse(mount.config_json || "{}");
   const redirectUri = cfg.redirectUri || `${new URL(c.req.url).origin}/api/oauth/${provider}/callback`;
+  if (!c.env.KV || typeof (c.env.KV as any).put !== "function") return c.json({ error: "未配置 KV，无法发起授权" }, 503);
+  const state = createState();
+  await c.env.KV.put(`oauth:${state}`, JSON.stringify({ mountId: mount.id, provider, redirectUri }), { expirationTtl: 600 });
   const url = buildAuthUrl(def.authorize, {
     client_id: cfg.clientId || "",
     response_type: "code",
     scope: def.scope,
     redirect_uri: redirectUri,
-    state: String(mountId),
+    state,
     ...(def.extraAuth || {}),
   });
   return c.json({ url });
@@ -43,16 +51,21 @@ oauth.get("/:provider/callback", async (c) => {
   const code = c.req.query("code");
   const state = c.req.query("state");
   if (!code || !state) return c.text("缺少 code 或 state", 400);
+  if (!c.env.KV || typeof (c.env.KV as any).get !== "function") return c.text("未配置 KV，无法完成授权", 503);
+  const raw = await c.env.KV.get(`oauth:${state}`);
+  await c.env.KV.delete(`oauth:${state}`);
+  if (!raw) return c.text("授权已过期或 state 无效，请重新发起授权", 400);
+  let pending: { mountId: number; provider: string; redirectUri: string };
+  try { pending = JSON.parse(raw); } catch { return c.text("授权状态无效，请重新发起授权", 400); }
+  if (pending.provider !== provider || !Number.isSafeInteger(pending.mountId)) return c.text("授权状态与服务商不匹配", 400);
   const store = getStore(c.env);
-  const mount = await store.getMount(Number(state));
+  const mount = await store.getMount(pending.mountId);
   if (!mount) return c.text("挂载不存在", 404);
   const cfg = JSON.parse(mount.config_json || "{}");
-  const redirectUri = cfg.redirectUri || `${new URL(c.req.url).origin}/api/oauth/${provider}/callback`;
   try {
-    const t = await oauthExchange(def.token, cfg.clientId || "", cfg.clientSecret || "", redirectUri, code, def.extraToken || {});
-    await saveTokens(c.env.KV, Number(state), t);
-    const merged = { ...cfg, refreshToken: t.refresh_token || cfg.refreshToken };
-    await store.updateMount(Number(state), { config_json: JSON.stringify(merged) });
+    const t = await oauthExchange(def.token, cfg.clientId || "", cfg.clientSecret || "", pending.redirectUri, code, def.extraToken || {});
+    await saveTokens(c.env.KV, pending.mountId, t);
+    await store.updateMount(pending.mountId, { config_json: JSON.stringify({ ...cfg, refreshToken: t.refresh_token || cfg.refreshToken }) });
   } catch (e: any) {
     return c.text("授权失败：" + (e?.message || e), 500);
   }

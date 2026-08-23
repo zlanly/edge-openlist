@@ -93,13 +93,20 @@ npm run build:web           # 构建前端到 web/dist
 3. 进入该 Worker 详情页 → **Settings → Build → 绑定 Git 仓库**（或 **Deployations → Connect Git**），选择你的 GitHub 仓库 `zlanly/edge-openlist`，分支 `main`，构建命令留空（仓库 `wrangler.toml` 的 `[build]` 会自动构建前端）。保存并触发一次部署。
 4. 等待部署完成（日志出现 `Uploaded edge-openlist` / `Success`）。此时 Worker 已上线，但因尚无 D1 绑定，访问会提示「未检测到 D1 数据库绑定」——这是预期内的，下一步修复。
 
-**Step 2 · 添加变量 / Secrets（仅 JWT）**
+**Step 2 · 添加变量 / Secrets（JWT + 初始化密钥）**
 1. Worker 详情页 → **Settings → Variables and Secrets**（或 **Variables**）。
 2. 点 **Add** 添加以下 **Secret**（选 Secret 类型，不可读取，更安全）：
    - `JWT_SECRET`：值填 `openssl rand -hex 32` 生成的随机串（或任意 32+ 位随机值）。
 3. 保存。添加变量会触发一次重新部署使其生效。
 
-> 管理员初始化**不再需要任何密钥**：部署后直接浏览器访问 `/api/auth/setup` 即可创建默认管理员（见 Step 7），无需 `BOOTSTRAP_SECRET`。
+> 管理员初始化需要部署者配置一次性 Secret：请添加 `BOOTSTRAP_SECRET`，不要使用固定默认密码。初始化接口只接受受保护的 POST 请求，GET 页面不会创建账号。
+
+初始化请求示例：
+```bash
+curl --fail-with-body -X POST "https://你的Worker子域.workers.dev/api/auth/setup" \\
+  -H 'Content-Type: application/json' \\
+  --data '{"username":"admin","password":"请替换为至少12位强密码","bootstrapSecret":"部署时配置的BOOTSTRAP_SECRET"}'
+```
 
 **Step 3 · 添加 D1 数据库绑定（必选，核心存储）**
 1. 左侧菜单 **Storage & Databases → D1 SQL Database** → **Create** 创建一个数据库，名称 `edge-openlist`，记下它。

@@ -81,39 +81,34 @@ export class ChunkDriver extends CloudBase {
     const ds = await this.ensureDrivers();
     const rp = this.rp(path);
     const merged = new Map<string, FileItem>();
-    const bags = new Map<string, Driver>();
+    const bags = new Map<string, Map<Driver, FileItem>>();
     for (const d of ds) {
       let items: FileItem[] = [];
-      try {
-        items = await d.list(rp);
-      } catch {
-        continue;
-      }
+      try { items = await d.list(rp); } catch { continue; }
       for (const it of items) {
-        if (it.is_dir && it.name.startsWith(this.chunkPrefix)) bags.set(it.name, d);
-        else merged.set(it.name, { ...it, path: joinPath(path, it.name) });
+        if (it.is_dir && it.name.startsWith(this.chunkPrefix)) {
+          if (!bags.has(it.name)) bags.set(it.name, new Map());
+          bags.get(it.name)!.set(d, it);
+        } else merged.set(it.name, { ...it, path: joinPath(path, it.name) });
       }
     }
-    for (const [bagName, d] of bags) {
+    for (const [bagName, owners] of bags) {
       const fileName = bagName.slice(this.chunkPrefix.length);
       if (merged.has(fileName)) continue;
-      let partItems: FileItem[] = [];
-      try {
-        partItems = await d.list(joinPath(rp, bagName));
-      } catch {
-        partItems = [];
+      const parts = new Map<number, { size: number; modified: number }>();
+      for (const d of owners.keys()) {
+        let partItems: FileItem[] = [];
+        try { partItems = await d.list(joinPath(rp, bagName)); } catch { continue; }
+        for (const part of partItems) {
+          const m = part.name.match(/^(\d+)(\.\w+)?$/); if (!m) continue;
+          const idx = Number(m[1]);
+          if (!parts.has(idx)) parts.set(idx, { size: part.size, modified: part.modified });
+        }
       }
-      const partSizes: number[] = [];
-      let modified = Date.now();
-      for (const p of partItems) {
-        const m = p.name.match(/^(\d+)(\.\w+)?$/);
-        if (!m) continue;
-        const idx = Number(m[1]);
-        partSizes[idx] = p.size;
-        if (idx === 0) modified = p.modified;
-      }
-      const total = partSizes.reduce((a, b) => a + (b || 0), 0);
-      merged.set(fileName, { name: fileName, path: joinPath(path, fileName), is_dir: false, size: total, modified });
+      const indexes = [...parts.keys()].sort((a, b) => a - b);
+      if (!indexes.length || indexes.some((n, i) => n !== i)) continue;
+      const total = indexes.reduce((sum, i) => sum + parts.get(i)!.size, 0);
+      merged.set(fileName, { name: fileName, path: joinPath(path, fileName), is_dir: false, size: total, modified: parts.get(0)!.modified });
     }
     return sortItems([...merged.values()]);
   }
@@ -128,52 +123,29 @@ export class ChunkDriver extends CloudBase {
 
   async getContent(path: string, range?: string): Promise<Response | string> {
     const ds = await this.ensureDrivers();
-    const name = basename(path);
-    const dir = parentPath(path);
-    const bagName = this.chunkPrefix + name;
-    let bagDriver: Driver | null = null;
-    let partItems: FileItem[] = [];
+    const name = basename(path), dir = parentPath(path), bagName = this.chunkPrefix + name;
+    const parts = new Map<number, { driver: Driver; item: FileItem }>();
     for (const d of ds) {
-      try {
-        const ps = await d.list(this.rp(joinPath(dir, bagName)));
-        if (ps.length) {
-          bagDriver = d;
-          partItems = ps;
-          break;
-        }
-      } catch {
-        // not on this driver
+      let items: FileItem[] = [];
+      try { items = await d.list(this.rp(joinPath(dir, bagName))); } catch { continue; }
+      for (const item of items) {
+        const m = item.name.match(/^(\d+)(\.\w+)?$/); if (!m) continue;
+        const idx = Number(m[1]); if (!parts.has(idx)) parts.set(idx, { driver: d, item });
       }
     }
-    if (bagDriver) {
-      const partSizes: number[] = [];
-      let modified = Date.now();
-      for (const p of partItems) {
-        const m = p.name.match(/^(\d+)(\.\w+)?$/);
-        if (!m) continue;
-        const idx = Number(m[1]);
-        partSizes[idx] = p.size;
-        if (idx === 0) modified = p.modified;
-      }
-      const total = partSizes.reduce((a, b) => a + (b || 0), 0);
-      return this.concatStream(name, dir, partSizes, total, modified, range);
+    if (parts.size) {
+      const indexes = [...parts.keys()].sort((a, b) => a - b);
+      if (indexes.some((n, i) => n !== i)) throw new Error("chunk: 分片缺失，文件损坏");
+      const sizes = indexes.map((i) => parts.get(i)!.item.size);
+      const total = sizes.reduce((a, b) => a + b, 0);
+      return this.concatStream(name, dir, parts, sizes, total, parts.get(0)!.item.modified, range);
     }
-    // 真实文件直通
     for (const d of ds) {
       try {
         const r = await d.getContent(this.rp(path), range);
-        if (typeof r === "string") {
-          if (range) {
-            const rr = await fetch(r, { headers: { Range: range } });
-            if (!rr.ok && rr.status !== 206) continue;
-            return rr;
-          }
-          return r;
-        }
+        if (typeof r === "string") return fetch(r, range ? { headers: { Range: range } } : {});
         return r;
-      } catch {
-        // try next
-      }
+      } catch { /* try next */ }
     }
     throw new Error("chunk: 文件不存在 " + path);
   }
@@ -181,6 +153,7 @@ export class ChunkDriver extends CloudBase {
   private async concatStream(
     name: string,
     dir: string,
+    parts: Map<number, { driver: Driver; item: FileItem }>,
     partSizes: number[],
     total: number,
     modified: number,
@@ -193,10 +166,11 @@ export class ChunkDriver extends CloudBase {
     let requestedLen: number | null = null;
     if (range) {
       const r = parseRange(range, total);
-      start = r.offset;
-      requestedLen = r.length;
+      if (!r) return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${total}` } });
+      start = r.offset; requestedLen = r.length;
     }
-    const end = requestedLen != null ? start + requestedLen : total;
+    const end = requestedLen != null ? Math.min(total, start + requestedLen) : total;
+    if (start >= total && total > 0) return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${total}` } });
     const streams: ReadableStream[] = [];
     let offset = 0;
     for (let i = 0; i < partSizes.length; i++) {
@@ -209,8 +183,10 @@ export class ChunkDriver extends CloudBase {
       if (pStart >= end) break;
       const localStart = Math.max(0, start - pStart);
       const localEnd = Math.min(ps, end - pStart);
-      const owning = ds[(base + i) % ds.length];
-      const pp = this.rp(joinPath(joinPath(dir, this.chunkPrefix + name), String(i) + ext));
+      const owner = parts.get(i);
+      if (!owner) throw new Error(`chunk: 缺少分片 ${i}`);
+      const owning = owner.driver;
+      const pp = this.rp(joinPath(joinPath(dir, this.chunkPrefix + name), owner.item.name));
       let partStream: ReadableStream;
       if (localStart === 0 && localEnd === ps) {
         const r = await owning.getContent(pp);
@@ -266,7 +242,8 @@ export class ChunkDriver extends CloudBase {
             await owning.mkdir(bagDir).catch(() => {});
             ensured.add((base + partIndex) % ds.length);
           }
-          await owning.putContent?.(pp, bufToStream(chunk));
+          if (!owning.putContent) throw new Error(`chunk: 底层驱动「${owning.id}」不支持分片上传`);
+          await owning.putContent(pp, bufToStream(chunk));
           partIndex++;
         }
       }
@@ -278,7 +255,8 @@ export class ChunkDriver extends CloudBase {
           await owning.mkdir(bagDir).catch(() => {});
           ensured.add(owningIdx);
         }
-        await owning.putContent?.(pp, bufToStream(buf));
+        if (!owning.putContent) throw new Error(`chunk: 底层驱动「${owning.id}」不支持分片上传`);
+        await owning.putContent(pp, bufToStream(buf));
         partIndex++;
       }
     } finally {
@@ -392,11 +370,18 @@ function combineStreams(streams: ReadableStream[]): ReadableStream {
   });
 }
 
-function parseRange(header: string, total: number): { offset: number; length: number | null } {
+function parseRange(header: string, total: number): { offset: number; length: number } | null {
   const m = header.trim().match(/^bytes=(\d*)-(\d*)$/);
-  if (!m) return { offset: 0, length: null };
-  if (m[1] === "" && m[2] !== "") return { offset: Math.max(0, total - Number(m[2])), length: Number(m[2]) };
-  const offset = Number(m[1] || "0");
-  if (m[2] === "") return { offset, length: null };
-  return { offset, length: Number(m[2]) - offset + 1 };
+  if (!m || total < 0) return null;
+  if (m[1] === "" && m[2] !== "") {
+    const suffix = Number(m[2]);
+    if (!Number.isSafeInteger(suffix) || suffix <= 0 || total === 0) return null;
+    return { offset: Math.max(0, total - suffix), length: Math.min(suffix, total) };
+  }
+  const offset = Number(m[1]);
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset >= total) return null;
+  const end = m[2] === "" ? total - 1 : Number(m[2]);
+  if (!Number.isSafeInteger(end) || end < offset) return null;
+  const bounded = Math.min(end, total - 1);
+  return { offset, length: bounded - offset + 1 };
 }

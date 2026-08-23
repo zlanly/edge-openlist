@@ -30,7 +30,7 @@ export class Cloud189Driver extends CloudBase {
     const r = await fetch(url, { headers: await this.hdrs() });
     if (!r.ok) throw new Error(`189 GET ${r.status} ${url}`);
     const j = (await r.json()) as any;
-    if (j.res_code && j.res_code !== 0) throw new Error(`189 err ${j.res_code}: ${j.res_message}`);
+    if (j.res_code != null && String(j.res_code) !== "0") throw new Error(`189 err ${j.res_code}: ${j.res_message}`);
     return j as T;
   }
 
@@ -43,37 +43,60 @@ export class Cloud189Driver extends CloudBase {
     });
     if (!r.ok) throw new Error(`189 POST ${r.status} ${url}`);
     const j = (await r.json()) as any;
-    if (j.res_code && j.res_code !== 0) throw new Error(`189 err ${j.res_code}: ${j.res_message}`);
+    if (j.res_code != null && String(j.res_code) !== "0") throw new Error(`189 err ${j.res_code}: ${j.res_message}`);
     return j;
   }
 
+  private async listFolder(folderId: string): Promise<{ folderList: any[]; fileList: any[] }> {
+    const folders: any[] = [];
+    const files: any[] = [];
+    for (let pageNum = 1;; pageNum++) {
+      const j = await this.apiGet<{ fileListAO?: { folderList?: any[]; fileList?: any[] }; total?: number }>(
+        "/api/open/file/listFiles.action",
+        { folderId, pageSize: "100", pageNum: String(pageNum), mediaType: "0", iconOption: "5", orderBy: "lastOpTime", descending: "true" },
+      );
+      const pageFolders = j.fileListAO?.folderList || [];
+      const pageFiles = j.fileListAO?.fileList || [];
+      folders.push(...pageFolders);
+      files.push(...pageFiles);
+      const count = pageFolders.length + pageFiles.length;
+      const total = Number(j.total ?? (j.fileListAO as any)?.total ?? NaN);
+      if (count === 0 || count < 100 || (Number.isFinite(total) && folders.length + files.length >= total)) break;
+    }
+    return { folderList: folders, fileList: files };
+  }
+
+  private async resolveFolder(path: string): Promise<string> {
+    if (path === "/" || path === "") return "-11";
+    let folderId = "-11";
+    for (const name of path.split("/").filter(Boolean)) {
+      const listing = await this.listFolder(folderId);
+      const folder = listing.folderList.find((x) => x.name === name);
+      if (!folder) throw new Error("not found: " + path);
+      folderId = String(folder.id);
+    }
+    return folderId;
+  }
+
   private async resolve(path: string): Promise<{ id: string; isDir: boolean }> {
-    const dir = parentPath(path);
+    const dirId = await this.resolveFolder(parentPath(path));
     const name = basename(path);
-    const j = await this.apiGet<{ fileListAO: { folderList: any[]; fileList: any[] } }>(
-      "/api/open/file/listFiles.action",
-      { folderId: dir === "/" ? "-11" : dir, pageSize: "100", pageNum: "1", mediaType: "0", iconOption: "5", orderBy: "lastOpTime", descending: "true" },
-    );
-    const folders = j.fileListAO?.folderList || [];
-    const files = j.fileListAO?.fileList || [];
-    const f = folders.find((x) => x.name === name);
+    const listing = await this.listFolder(dirId);
+    const f = listing.folderList.find((x) => x.name === name);
     if (f) return { id: String(f.id), isDir: true };
-    const fi = files.find((x) => x.name === name);
+    const fi = listing.fileList.find((x) => x.name === name);
     if (fi) return { id: String(fi.id), isDir: false };
     throw new Error("not found: " + path);
   }
 
   async list(path: string): Promise<FileItem[]> {
-    const folderId = path === "/" ? "-11" : (await this.resolve(path)).id;
-    const j = await this.apiGet<{ fileListAO: { folderList: any[]; fileList: any[] } }>(
-      "/api/open/file/listFiles.action",
-      { folderId, pageSize: "100", pageNum: "1", mediaType: "0", iconOption: "5", orderBy: "lastOpTime", descending: "true" },
-    );
+    const folderId = await this.resolveFolder(path);
+    const listing = await this.listFolder(folderId);
     const out: FileItem[] = [];
-    for (const f of j.fileListAO?.folderList || []) {
+    for (const f of listing.folderList) {
       out.push({ name: f.name, path: joinPath(path, f.name), is_dir: true, size: 0, modified: Date.parse(f.lastOpTime) || 0 });
     }
-    for (const f of j.fileListAO?.fileList || []) {
+    for (const f of listing.fileList) {
       out.push({ name: f.name, path: joinPath(path, f.name), is_dir: false, size: Number(f.size || 0), modified: Date.parse(f.lastOpTime) || 0 });
     }
     return out;
@@ -115,7 +138,7 @@ export class Cloud189Driver extends CloudBase {
 
   async mkdir(path: string): Promise<void> {
     await this.apiPost("/api/open/file/createFolder.action", {
-      parentFolderId: parentPath(path) === "/" ? "-11" : parentPath(path),
+      parentFolderId: await this.resolveFolder(parentPath(path)),
       folderName: basename(path),
     });
   }
@@ -141,7 +164,7 @@ export class Cloud189Driver extends CloudBase {
     const r = await this.resolve(from);
     await this.apiPost("/api/open/batch/createBatchTask.action", {
       type: "MOVE",
-      targetFolderId: parentPath(to) === "/" ? "-11" : parentPath(to),
+      targetFolderId: await this.resolveFolder(parentPath(to)),
       taskInfos: JSON.stringify([{ fileId: r.id, fileName: basename(from), isFolder: r.isDir ? 1 : 0 }]),
     });
   }

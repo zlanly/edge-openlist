@@ -29,10 +29,20 @@ export async function hashPassword(pw: string): Promise<string> {
 }
 
 export async function verifyPassword(pw: string, stored: string): Promise<boolean> {
-  const [scheme, iterStr, saltB64, hash] = stored.split("$");
-  if (scheme !== "pbkdf2") return false;
-  const h = await pbkdf2(pw, fromB64(saltB64), Number(iterStr));
-  return timingSafeEqual(h, hash);
+  try {
+    const parts = stored.split("$");
+    if (parts.length !== 4 || parts[0] !== "pbkdf2") return false;
+    const iter = Number(parts[1]);
+    if (!Number.isSafeInteger(iter) || iter < 10_000 || iter > 2_000_000) return false;
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(parts[2]) || parts[2].length > 256) return false;
+    if (!/^[0-9a-f]{64}$/i.test(parts[3])) return false;
+    const salt = fromB64(parts[2]);
+    if (salt.length < 8 || salt.length > 64) return false;
+    const h = await pbkdf2(pw, salt, iter);
+    return timingSafeEqual(h, parts[3]);
+  } catch {
+    return false;
+  }
 }
 
 /** 恒定时间字符串比较，避免通过响应时间侧信道爆破哈希/分享密码。 */

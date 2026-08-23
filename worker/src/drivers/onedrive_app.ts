@@ -139,41 +139,48 @@ export class OnedriveAppDriver extends CloudBase {
     });
     const uploadUrl: string = create.uploadUrl;
     if (!uploadUrl) throw new Error("onedrive_app 未返回 uploadUrl");
-    const chunk = (this.cfg as any).chunk_size
-      ? Number((this.cfg as any).chunk_size) * 1024 * 1024
-      : 5 * 1024 * 1024;
+    const chunk = (this.cfg as any).chunk_size ? Number((this.cfg as any).chunk_size) * 1024 * 1024 : 5 * 1024 * 1024;
+    if (!Number.isSafeInteger(chunk) || chunk <= 0) throw new Error("onedrive_app chunk_size 无效");
     const reader = (body as ReadableStream<Uint8Array>).getReader();
     let buf = new Uint8Array(0);
     let start = 0;
-    const uploadPart = async (data: Uint8Array) => {
+    let lastStatus = 0;
+    const uploadPart = async (data: Uint8Array, final: boolean) => {
       const r = await fetch(uploadUrl, {
         method: "PUT",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Range": `bytes ${start}-${start + data.length - 1}/${size}`,
-        },
+        headers: { Authorization: `Bearer ${token}`, "Content-Range": `bytes ${start}-${start + data.length - 1}/${size}` },
         body: data,
       });
-      if (r.status !== 200 && r.status !== 201 && r.status !== 202) {
-        const txt = await r.text().catch(() => "");
-        throw new Error(`onedrive_app 分片上传失败 ${r.status}: ${txt}`);
-      }
+      lastStatus = r.status;
+      if (r.status !== 200 && r.status !== 201 && r.status !== 202) throw new Error(`onedrive_app 分片上传失败 ${r.status}: ${(await r.text().catch(() => "")).slice(0, 300)}`);
+      if (final && r.status === 202) throw new Error("onedrive_app 上传未完成：服务端仍返回 202");
       start += data.length;
     };
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      const merged = new Uint8Array(buf.length + value.length);
-      merged.set(buf, 0);
-      merged.set(value, buf.length);
-      buf = merged;
-      while (buf.length >= chunk) {
-        await uploadPart(buf.slice(0, chunk));
-        buf = buf.slice(chunk);
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value?.length) continue;
+        const merged = new Uint8Array(buf.length + value.length);
+        merged.set(buf); merged.set(value, buf.length); buf = merged;
+        while (buf.length >= chunk) {
+          const piece = buf.slice(0, chunk); buf = buf.slice(chunk);
+          await uploadPart(piece, false);
+        }
       }
+      if (buf.length > 0) await uploadPart(buf, true);
+      else if (start === 0) {
+        // Graph 上传会话不能用空 PUT 表示完成；零字节文件改用普通 PUT 创建。
+        const r = await fetch(this.metaUrl(path), { method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": _ct || "application/octet-stream", "Content-Length": "0" }, body: new Uint8Array(0) });
+        if (!r.ok) throw new Error(`onedrive_app 零字节上传失败 ${r.status}`);
+        return;
+      } else if (lastStatus === 202) {
+        throw new Error("onedrive_app 上传未完成");
+      }
+      if (size > 0 && start !== size) throw new Error(`onedrive_app 上传大小不一致：声明 ${size}，实际 ${start}`);
+    } finally {
+      reader.releaseLock();
     }
-    if (buf.length > 0) await uploadPart(buf);
   }
 
   async mkdir(path: string): Promise<void> {

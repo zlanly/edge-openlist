@@ -55,16 +55,24 @@ export class GoogleDriveDriver extends CloudBase {
   async list(path: string): Promise<FileItem[]> {
     const parentId = await this.resolveId(path);
     const q = `'${parentId}' in parents and trashed = false`;
-    const url = `${API}/drive/v3/files?q=${encodeURIComponent(q)}&fields=nextPageToken,files(id,name,mimeType,size,modifiedTime)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true`;
-    const j = await this.jsonGet<{ files: any[] }>(url);
-    return (j.files || []).map((f) => ({
-      name: f.name,
-      path: joinPath(path, f.name),
-      is_dir: f.mimeType === FOLDER_MIME,
-      size: Number(f.size || 0),
-      modified: f.modifiedTime ? Date.parse(f.modifiedTime) : 0,
-      etag: f.id,
-    }));
+    const out: FileItem[] = [];
+    let pageToken = "";
+    for (;;) {
+      const params = new URLSearchParams({ q, fields: "nextPageToken,files(id,name,mimeType,size,modifiedTime)", pageSize: "1000", supportsAllDrives: "true", includeItemsFromAllDrives: "true" });
+      if (pageToken) params.set("pageToken", pageToken);
+      const j = await this.jsonGet<{ files: any[]; nextPageToken?: string }>(`${API}/drive/v3/files?${params}`);
+      out.push(...(j.files || []).map((f) => ({
+        name: f.name,
+        path: joinPath(path, f.name),
+        is_dir: f.mimeType === FOLDER_MIME,
+        size: Number(f.size || 0),
+        modified: f.modifiedTime ? Date.parse(f.modifiedTime) : 0,
+        etag: f.id,
+      })));
+      if (!j.nextPageToken || j.nextPageToken === pageToken) break;
+      pageToken = j.nextPageToken;
+    }
+    return out;
   }
 
   async get(path: string): Promise<FileItem> {

@@ -25,9 +25,12 @@ export class BaiduNetdiskDriver extends CloudBase {
       let nrt = rt;
       // 在线刷新 API（默认）或官方 openapi
       if (this.cfgStr("useOnlineApi") !== "false") {
-        const r = await fetch(this.cfgStr("apiUrlAddress") || "https://api.oplist.org/baiduyun/renewapi", {
+        const renewUrl = new URL(this.cfgStr("apiUrlAddress") || "https://api.oplist.org/baiduyun/renewapi");
+        renewUrl.searchParams.set("refresh_token", rt);
+        const r = await fetch(renewUrl.toString(), {
           headers: { "Content-Type": "application/json" },
         });
+        if (!r.ok) throw new Error(`在线刷新失败: HTTP ${r.status}`);
         const j = (await r.json()) as { access_token?: string; refresh_token?: string; text?: string };
         at = j.access_token || "";
         nrt = j.refresh_token || rt;
@@ -62,16 +65,22 @@ export class BaiduNetdiskDriver extends CloudBase {
     if (!r.ok) throw new Error(`GET ${r.status} ${url}`);
     const j = (await r.json()) as any;
     if (j.errno && j.errno !== 0) throw new Error(`baidu errno ${j.errno}`);
-    return j[resp] as T;
+    return (resp ? j[resp] : j) as T;
   }
 
   async list(path: string): Promise<FileItem[]> {
     const dir = normalizePath(path);
-    const list = await this.call<{ fs_id: number; path: string; server_filename: string; size: number; isdir: number; server_mtime: number; server_ctime: number; thumbs?: { url3?: string } }[]>(
-      "/xpan/file",
-      { method: "list", dir, web: "web", start: "0", limit: "1000", order: this.cfgStr("orderBy") || "name", ...(this.cfgStr("orderDirection") === "desc" ? { desc: "1" } : {}) },
-      "list",
-    );
+    const list: { fs_id: number; path: string; server_filename: string; size: number; isdir: number; server_mtime: number; server_ctime: number; thumbs?: { url3?: string } }[] = [];
+    for (let start = 0;;) {
+      const page = await this.call<typeof list>(
+        "/xpan/file",
+        { method: "list", dir, web: "web", start: String(start), limit: "1000", order: this.cfgStr("orderBy") || "name", ...(this.cfgStr("orderDirection") === "desc" ? { desc: "1" } : {}) },
+        "list",
+      );
+      list.push(...(page || []));
+      if (!page || page.length < 1000) break;
+      start += page.length;
+    }
     return list.map((f) => ({
       name: f.server_filename,
       path: joinPath(dir, f.server_filename),
