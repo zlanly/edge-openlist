@@ -41,6 +41,12 @@ onMounted(async () => {
 
 <template>
   <div class="login-page">
+    <!-- OpenList 登录页同款：主色渐变的装饰圆 -->
+    <div class="bg" aria-hidden="true">
+      <i class="blob b1" />
+      <i class="blob b2" />
+      <i class="blob b3" />
+    </div>
     <div class="corner"><ThemeToggle /></div>
 
     <div class="card panel">
@@ -103,8 +109,16 @@ onMounted(async () => {
   display: grid;
   place-items: center;
   padding: 24px;
+  position: relative;
+  overflow: hidden;
 }
-.corner { position: fixed; top: 16px; right: 16px; }
+/* 装饰背景：主色系渐变圆，和 OpenList 登录页一个路数 */
+.bg { position: absolute; inset: 0; pointer-events: none; }
+.blob { position: absolute; border-radius: 50%; filter: blur(70px); opacity: 0.5; }
+.b1 { width: 420px; height: 420px; top: -140px; left: -120px; background: radial-gradient(circle, var(--brand) 0%, transparent 70%); }
+.b2 { width: 360px; height: 360px; bottom: -120px; right: -100px; background: radial-gradient(circle, var(--accent-2) 0%, transparent 70%); }
+.b3 { width: 260px; height: 260px; top: 40%; left: 60%; background: radial-gradient(circle, var(--brand-strong) 0%, transparent 70%); opacity: 0.28; }
+.corner { position: fixed; top: 16px; right: 16px; z-index: 2; }
 
 .card {
   width: 100%;
@@ -113,6 +127,8 @@ onMounted(async () => {
   text-align: center;
   box-shadow: var(--shadow-lg);
   animation: rise 0.45s var(--ease);
+  position: relative;
+  z-index: 1;
 }
 @keyframes rise { from { opacity: 0; transform: translateY(16px); } }
 

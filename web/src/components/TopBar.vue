@@ -9,7 +9,7 @@ import type { UserInfo } from "../api";
 const props = defineProps<{ user: UserInfo | null; keyword: string; searching: boolean }>();
 const emit = defineEmits<{
   (e: "update:keyword", v: string): void;
-  (e: "toggle-sidebar"): void;
+  (e: "home"): void;
   (e: "open-mounts"): void;
   (e: "change-password"): void;
   (e: "logout"): void;
@@ -85,19 +85,13 @@ const uploadTitle = computed(() =>
 
 <template>
   <header class="topbar">
-    <button class="btn btn-icon btn-ghost burger" aria-label="打开挂载列表" @click="emit('toggle-sidebar')">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
-        <path d="M4 6h16M4 12h16M4 18h16" />
-      </svg>
-    </button>
-
-    <div class="brand">
+    <button class="brand" title="回到存储列表" aria-label="回到存储列表" @click="emit('home')">
       <svg class="mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M6 19a4 4 0 0 1-.9-7.9 5.5 5.5 0 0 1 10.7-1.8A4.5 4.5 0 1 1 17.5 19H6Z" />
       </svg>
       <span class="name">EdgeOpenList</span>
-    </div>
+    </button>
 
     <div class="search">
       <svg class="si" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
@@ -165,10 +159,21 @@ const uploadTitle = computed(() =>
   z-index: 120;
 }
 
-.burger { display: none; }
-.burger svg { width: 18px; height: 18px; }
-
-.brand { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease);
+}
+.brand:hover { background: var(--surface-3); }
 .mark { width: 22px; height: 22px; color: var(--brand); }
 .name { font-weight: 680; font-size: 15px; letter-spacing: -0.01em; }
 
@@ -260,8 +265,7 @@ const uploadTitle = computed(() =>
 }
 @media (max-width: 768px) {
   .topbar { padding: 0 10px; gap: 8px; }
-  .burger { display: grid; }
-  .name { display: none; }
+  .brand { padding: 6px 4px; }
   .search { max-width: none; }
   .up-txt { display: none; }
 }

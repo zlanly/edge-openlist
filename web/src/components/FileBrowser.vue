@@ -20,6 +20,7 @@ const emit = defineEmits<{
   (e: "navigate", path: string): void;
   (e: "preview", payload: { item: FileItem; list: FileItem[] }): void;
   (e: "manage"): void;
+  (e: "home"): void;
 }>();
 
 const toast = useToast();
@@ -116,19 +117,48 @@ const sorted = computed(() => {
 const previewables = computed(() => sorted.value.filter((i) => !i.is_dir && isPreviewable(kindOf(i))));
 
 const SORT_LABEL: Record<SortKey, string> = { name: "名称", size: "大小", modified: "修改时间" };
-const sortBtn = ref<HTMLElement | null>(null);
-const sortMenuOpen = ref(false);
-const sortMenu = computed<MenuItem[]>(() => [
-  { key: "name", label: "按名称" + (sortKey.value === "name" ? " ✓" : "") },
-  { key: "size", label: "按大小" + (sortKey.value === "size" ? " ✓" : "") },
-  { key: "modified", label: "按修改时间" + (sortKey.value === "modified" ? " ✓" : "") },
-  { key: "toggle", label: sortAsc.value ? "改为倒序" : "改为正序", divided: true },
-]);
-function onSortMenu(key: string) {
-  sortMenuOpen.value = false;
-  if (key === "toggle") sortAsc.value = !sortAsc.value;
-  else sortKey.value = key as SortKey;
+
+// OpenList 的表头即排序控件：点列头切换排序键，再点一次反转方向
+function sortBy(key: SortKey) {
+  if (sortKey.value === key) sortAsc.value = !sortAsc.value;
+  else {
+    sortKey.value = key;
+    sortAsc.value = true;
+  }
 }
+
+// ---------------------------------------------------------------------------
+// 分页（OpenList 形态：底部分页器，默认每页 100 条）
+// ---------------------------------------------------------------------------
+const PAGE_SIZE = 100;
+const page = ref(1);
+watch(
+  () => [props.mount?.id, props.path, items.value.length] as const,
+  () => (page.value = 1)
+);
+const pageCount = computed(() => Math.max(1, Math.ceil(sorted.value.length / PAGE_SIZE)));
+const paged = computed(() => sorted.value.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE));
+watch(pageCount, (n) => {
+  if (page.value > n) page.value = n;
+});
+function gotoPage(p: number) {
+  if (p < 1 || p > pageCount.value || p === page.value) return;
+  page.value = p;
+}
+// 页码按钮：当前页附近全列，远处折叠成省略号（页数多时不会挤爆一行）
+const pagerItems = computed<(number | "…")[]>(() => {
+  const n = pageCount.value;
+  const cur = page.value;
+  if (n <= 7) return Array.from({ length: n }, (_, i) => i + 1);
+  const out: (number | "…")[] = [1];
+  const lo = Math.max(2, cur - 1);
+  const hi = Math.min(n - 1, cur + 1);
+  if (lo > 2) out.push("…");
+  for (let i = lo; i <= hi; i++) out.push(i);
+  if (hi < n - 1) out.push("…");
+  out.push(n);
+  return out;
+});
 
 // ---------------------------------------------------------------------------
 // 面包屑
@@ -476,151 +506,153 @@ function onDrop(e: DragEvent) {
     @dragleave="onDragLeave"
     @drop.prevent="onDrop"
   >
-    <!-- ── 工具栏 ── -->
-    <div class="toolbar">
-      <nav class="crumbs" aria-label="路径">
-        <button
-          v-if="path !== '/'"
-          class="btn btn-icon btn-ghost up"
-          aria-label="返回上一级"
-          @click="go(parentOf(path))"
-        >
+    <div class="container">
+      <!-- ── 面包屑（OpenList Nav：首页图标 + 路径层级） ── -->
+      <nav class="nav" aria-label="路径">
+        <button class="crumb home" title="回到存储列表" aria-label="回到存储列表" @click="emit('home')">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-            <path d="m15 18-6-6 6-6" />
+            <path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1V10Z" />
           </svg>
         </button>
         <template v-for="(c, i) in crumbs" :key="c.path">
-          <span v-if="i" class="sep" aria-hidden="true">/</span>
+          <span class="sep" aria-hidden="true">/</span>
           <button class="crumb" :class="{ cur: i === crumbs.length - 1 }" @click="go(c.path)">{{ c.name }}</button>
         </template>
       </nav>
 
-      <div class="tools">
-        <button class="btn btn-ghost btn-icon" title="刷新" aria-label="刷新" :disabled="loading" @click="load()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5" />
-          </svg>
-        </button>
-        <button
-          ref="sortBtn"
-          class="btn btn-ghost sort"
-          :title="`排序：${SORT_LABEL[sortKey]}`"
-          @click="sortMenuOpen = !sortMenuOpen"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path v-if="sortAsc" d="M3 6h11M3 12h7M3 18h4m10-13v14m0 0 4-4m-4 4-4-4" />
-            <path v-else d="M3 6h4M3 12h7M3 18h11m3-13v14m0 0 4-4m-4 4-4-4" />
-          </svg>
-          <span class="sort-txt">{{ SORT_LABEL[sortKey] }}</span>
-        </button>
-        <PopMenu v-if="sortMenuOpen" :anchor="sortBtn" :items="sortMenu" @select="onSortMenu" @close="sortMenuOpen = false" />
+      <!-- ── 工具条（OpenList Toolbar） ── -->
+      <div class="toolbar">
+        <div class="tools">
+          <button class="btn btn-primary" :disabled="!mount" @click="pickFiles">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 19V5m0 0-6 6m6-6 6 6" />
+            </svg>
+            <span class="lbl">上传</span>
+          </button>
+          <button class="btn" :disabled="!mount || busy" @click="newFolder">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Zm9 4v6m-3-3h6" />
+            </svg>
+            <span class="lbl">新建文件夹</span>
+          </button>
+          <input ref="fileInput" type="file" multiple hidden @change="onPicked" />
 
-        <button
-          class="btn btn-ghost btn-icon"
-          :title="view === 'grid' ? '切换为列表' : '切换为网格'"
-          :aria-label="view === 'grid' ? '切换为列表视图' : '切换为网格视图'"
-          @click="view = view === 'grid' ? 'list' : 'grid'"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path v-if="view === 'grid'" d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01" />
-            <path v-else d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" />
-          </svg>
-        </button>
+          <span class="divider" aria-hidden="true" />
 
-        <span class="divider" aria-hidden="true" />
-
-        <button class="btn btn-ghost" :disabled="!mount || busy" @click="newFolder">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Zm9 4v6m-3-3h6" />
-          </svg>
-          <span class="lbl">新建文件夹</span>
-        </button>
-        <button class="btn btn-primary" :disabled="!mount" @click="pickFiles">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 19V5m0 0-6 6m6-6 6 6" />
-          </svg>
-          <span class="lbl">上传</span>
-        </button>
-        <input ref="fileInput" type="file" multiple hidden @change="onPicked" />
-      </div>
-    </div>
-
-    <!-- ── 多选操作条 ── -->
-    <Transition name="pop">
-      <div v-if="picking" class="selbar">
-        <span class="cnt">已选 {{ selected.size }} 项</span>
-        <button class="btn btn-sm btn-ghost" @click="selectAll">
-          {{ selected.size === sorted.length ? "取消全选" : "全选" }}
-        </button>
-        <button class="btn btn-sm btn-danger" :disabled="busy" @click="removeSelected">删除所选</button>
-        <button class="btn btn-sm btn-ghost" @click="clearSelection">退出多选</button>
-      </div>
-    </Transition>
-
-    <!-- ── 内容区 ── -->
-    <div class="content">
-      <!-- 加载：骨架屏而不是一行「加载中…」，视觉上告诉用户「东西正在来」 -->
-      <div v-if="loading" class="entries" :class="'v-' + view">
-        <div v-for="i in view === 'grid' ? 12 : 8" :key="i" class="skeleton" :class="view === 'grid' ? 'sk-card' : 'sk-row'" />
-      </div>
-
-      <!-- 出错：明确原因 + 重试，而不是空白 -->
-      <div v-else-if="failure" class="state">
-        <svg class="big" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
-        </svg>
-        <h3>{{ failure.message }}</h3>
-        <p v-if="failure.code === 'upstream_error'">
-          这是网盘侧返回的错误，和你的登录状态无关。若持续出现，请到「管理挂载」里更新该网盘的凭据。
-        </p>
-        <p v-else-if="failure.code === 'timeout'">目录可能过大或网盘响应缓慢，可以稍后重试。</p>
-        <div class="acts">
-          <button class="btn btn-primary" @click="load()">重新加载</button>
-          <button v-if="isAdmin" class="btn btn-ghost" @click="emit('manage')">检查挂载配置</button>
+          <button
+            class="btn btn-icon"
+            :title="view === 'grid' ? '切换为列表' : '切换为网格'"
+            :aria-label="view === 'grid' ? '切换为列表视图' : '切换为网格视图'"
+            @click="view = view === 'grid' ? 'list' : 'grid'"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path v-if="view === 'grid'" d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01" />
+              <path v-else d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" />
+            </svg>
+          </button>
+          <button class="btn btn-icon" title="刷新" aria-label="刷新" :disabled="loading" @click="load()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5" />
+            </svg>
+          </button>
         </div>
       </div>
 
-      <!-- 一个挂载都没有 -->
-      <div v-else-if="!hasMounts" class="state">
-        <svg class="big" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M4 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v3H4V7Zm0 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3Z" />
-        </svg>
-        <h3>还没有挂载任何网盘</h3>
-        <p>添加一个网盘后，它的文件就会出现在这里。</p>
-        <div class="acts">
-          <button v-if="isAdmin" class="btn btn-primary" @click="emit('manage')">添加网盘</button>
-          <p v-else class="hint">请联系管理员添加挂载。</p>
+      <!-- ── 多选操作条 ── -->
+      <Transition name="pop">
+        <div v-if="picking" class="selbar">
+          <span class="cnt">已选 {{ selected.size }} 项</span>
+          <button class="btn btn-sm btn-ghost" @click="selectAll">
+            {{ selected.size === sorted.length ? "取消全选" : "全选" }}
+          </button>
+          <button class="btn btn-sm btn-danger" :disabled="busy" @click="removeSelected">删除所选</button>
+          <button class="btn btn-sm btn-ghost" @click="clearSelection">退出多选</button>
         </div>
-      </div>
+      </Transition>
 
-      <!-- 空目录 -->
-      <div v-else-if="!sorted.length" class="state">
-        <svg class="big" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" />
-        </svg>
-        <h3>这个文件夹是空的</h3>
-        <p>把文件拖到这里，或者点右上角上传。</p>
-        <div class="acts"><button class="btn btn-primary" @click="pickFiles">上传文件</button></div>
-      </div>
-
-      <!-- 列表 -->
-      <div v-else class="entries" :class="'v-' + view">
-        <div v-if="view === 'list'" class="lhead" aria-hidden="true">
-          <span class="lh-name">名称</span>
-          <span class="lh-size">大小</span>
-          <span class="lh-time">修改时间</span>
+      <!-- ── 内容卡片（OpenList obj-box） ── -->
+      <div class="obj-box panel">
+        <!-- 加载：骨架屏而不是一行「加载中…」，视觉上告诉用户「东西正在来」 -->
+        <div v-if="loading" class="entries" :class="'v-' + view">
+          <div v-for="i in view === 'grid' ? 12 : 8" :key="i" class="skeleton" :class="view === 'grid' ? 'sk-card' : 'sk-row'" />
         </div>
-        <FileEntry
-          v-for="it in sorted"
-          :key="it.path"
-          :item="it"
-          :view="view"
-          :selected="selected.has(it.path)"
-          :picking="picking"
-          @open="openItem"
-          @toggle="toggle"
-          @menu="openEntryMenu"
-        />
+
+        <!-- 出错：明确原因 + 重试，而不是空白 -->
+        <div v-else-if="failure" class="state">
+          <svg class="big" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
+          </svg>
+          <h3>{{ failure.message }}</h3>
+          <p v-if="failure.code === 'upstream_error'">
+            这是网盘侧返回的错误，和你的登录状态无关。若持续出现，请到「管理挂载」里更新该网盘的凭据。
+          </p>
+          <p v-else-if="failure.code === 'timeout'">目录可能过大或网盘响应缓慢，可以稍后重试。</p>
+          <div class="acts">
+            <button class="btn btn-primary" @click="load()">重新加载</button>
+            <button v-if="isAdmin" class="btn btn-ghost" @click="emit('manage')">检查挂载配置</button>
+          </div>
+        </div>
+
+        <!-- 一个挂载都没有 -->
+        <div v-else-if="!hasMounts" class="state">
+          <svg class="big" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v3H4V7Zm0 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3Z" />
+          </svg>
+          <h3>还没有挂载任何网盘</h3>
+          <p>添加一个网盘后，它的文件就会出现在这里。</p>
+          <div class="acts">
+            <button v-if="isAdmin" class="btn btn-primary" @click="emit('manage')">添加网盘</button>
+            <p v-else class="hint">请联系管理员添加挂载。</p>
+          </div>
+        </div>
+
+        <!-- 空目录 -->
+        <div v-else-if="!sorted.length" class="state">
+          <svg class="big" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" />
+          </svg>
+          <h3>这个文件夹是空的</h3>
+          <p>把文件拖到这里，或者点上方上传。</p>
+          <div class="acts"><button class="btn btn-primary" @click="pickFiles">上传文件</button></div>
+        </div>
+
+        <!-- 列表 -->
+        <div v-else class="entries" :class="'v-' + view">
+          <div v-if="view === 'list'" class="lhead">
+            <button class="lh lh-name" :class="{ on: sortKey === 'name' }" @click="sortBy('name')">
+              {{ SORT_LABEL.name }}<i class="arr" :class="{ desc: sortKey === 'name' && !sortAsc }" aria-hidden="true" />
+            </button>
+            <button class="lh lh-size" :class="{ on: sortKey === 'size' }" @click="sortBy('size')">
+              {{ SORT_LABEL.size }}<i class="arr" :class="{ desc: sortKey === 'size' && !sortAsc }" aria-hidden="true" />
+            </button>
+            <button class="lh lh-time" :class="{ on: sortKey === 'modified' }" @click="sortBy('modified')">
+              {{ SORT_LABEL.modified }}<i class="arr" :class="{ desc: sortKey === 'modified' && !sortAsc }" aria-hidden="true" />
+            </button>
+          </div>
+          <FileEntry
+            v-for="it in paged"
+            :key="it.path"
+            :item="it"
+            :view="view"
+            :selected="selected.has(it.path)"
+            :picking="picking"
+            @open="openItem"
+            @toggle="toggle"
+            @menu="openEntryMenu"
+          />
+        </div>
+
+        <!-- 分页器（OpenList Pager） -->
+        <div v-if="!loading && !failure && sorted.length > PAGE_SIZE" class="pager" role="navigation" aria-label="分页">
+          <button class="btn btn-sm" :disabled="page <= 1" aria-label="上一页" @click="gotoPage(page - 1)">‹</button>
+          <template v-for="p in pagerItems" :key="p">
+            <span v-if="p === '…'" class="ellip">…</span>
+            <button v-else class="btn btn-sm pg" :class="{ on: p === page }" :aria-current="p === page ? 'page' : undefined" @click="gotoPage(p as number)">
+              {{ p }}
+            </button>
+          </template>
+          <button class="btn btn-sm" :disabled="page >= pageCount" aria-label="下一页" @click="gotoPage(page + 1)">›</button>
+        </div>
       </div>
     </div>
 
@@ -643,22 +675,15 @@ function onDrop(e: DragEvent) {
 <style scoped>
 .browser { position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; }
 
-/* ---------- 工具栏 ---------- */
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 18px;
-  border-bottom: 1px solid var(--border);
-  flex-wrap: wrap;
-}
-.crumbs { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
-.crumbs::-webkit-scrollbar { display: none; }
-.up { margin-right: 4px; flex-shrink: 0; }
-.up svg { width: 16px; height: 16px; }
+/* OpenList 的居中容器 */
+.container { width: 100%; max-width: 1100px; margin: 0 auto; padding: 10px 16px 40px; display: flex; flex-direction: column; min-height: 0; }
+
+/* ---------- 面包屑（Nav） ---------- */
+.nav { display: flex; align-items: center; gap: 2px; padding: 6px 2px 10px; min-width: 0; overflow-x: auto; scrollbar-width: none; flex-shrink: 0; }
+.nav::-webkit-scrollbar { display: none; }
 .crumb {
   flex-shrink: 0;
-  max-width: 210px;
+  max-width: 220px;
   padding: 4px 8px;
   border: none;
   border-radius: var(--radius-sm);
@@ -670,51 +695,98 @@ function onDrop(e: DragEvent) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  transition: background-color 0.15s var(--ease), color 0.15s var(--ease);
+  transition: background-color 0.15s var(--ease), color 0.15s var(--ease), transform 0.1s var(--ease);
 }
 .crumb:hover { background: var(--surface-3); color: var(--text); }
+.crumb:active { transform: scale(0.95); }
 .crumb.cur { color: var(--text); font-weight: 600; }
+.crumb.home { display: grid; place-items: center; color: var(--brand); }
+.crumb.home svg { width: 16px; height: 16px; }
 .sep { color: var(--text-faint); font-size: 12px; flex-shrink: 0; }
 
-.tools { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+/* ---------- 工具条（Toolbar） ---------- */
+.toolbar { display: flex; align-items: center; padding: 0 2px 10px; flex-shrink: 0; }
+.tools { display: flex; align-items: center; gap: 6px; }
 .tools svg { width: 16px; height: 16px; }
-.sort-txt { font-size: 12.5px; }
-.divider { width: 1px; height: 20px; background: var(--border); margin: 0 2px; }
+.divider { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
 
 /* ---------- 多选条 ---------- */
 .selbar {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 18px;
+  padding: 8px 14px;
+  margin-bottom: 8px;
   background: var(--brand-soft);
-  border-bottom: 1px solid var(--border);
+  border-radius: var(--radius);
+  flex-shrink: 0;
 }
 .cnt { font-size: 13px; font-weight: 600; color: var(--brand-strong); margin-right: auto; }
 
-/* ---------- 内容 ---------- */
-.content { flex: 1; overflow-y: auto; padding: 14px 18px 28px; min-height: 0; }
+/* ---------- 内容卡片（obj-box） ---------- */
+.obj-box {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px;
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+}
 
-.entries.v-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 12px; }
+.entries.v-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 12px; padding: 4px; }
 .entries.v-list { display: flex; flex-direction: column; }
 
-.lhead {
-  display: flex;
-  gap: 12px;
-  padding: 0 10px 8px;
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  color: var(--text-faint);
-  text-transform: uppercase;
-  border-bottom: 1px solid var(--border);
+/* 可点排序的表头（OpenList ListTitle） */
+.lhead { display: flex; gap: 12px; padding: 4px 10px 8px; }
+.lh {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  padding: 2px 0;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--text-soft);
+  cursor: pointer;
+  transition: color 0.15s var(--ease);
 }
-.lh-name { flex: 1; padding-left: 46px; }
-.lh-size { width: 92px; text-align: right; }
-.lh-time { width: 132px; text-align: right; }
+.lh:hover { color: var(--text); }
+.lh.on { color: var(--brand); }
+.arr {
+  width: 0;
+  height: 0;
+  opacity: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid currentColor;
+  transition: transform 0.15s var(--ease), opacity 0.15s var(--ease);
+}
+.lh.on .arr { opacity: 1; }
+.arr.desc { transform: rotate(180deg); }
+.lh-name { flex: 1; padding-left: 46px; text-align: left; }
+.lh-size { width: 92px; justify-content: flex-end; }
+.lh-time { width: 132px; justify-content: flex-end; }
 
 .sk-card { height: 128px; border-radius: var(--radius-lg); }
 .sk-row { height: 42px; margin-bottom: 6px; }
+
+/* ---------- 分页器（Pager） ---------- */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 14px 8px 8px;
+  margin-top: auto;
+}
+.pg { min-width: 30px; font-variant-numeric: tabular-nums; }
+.pg.on { background: var(--brand); color: #fff; }
+.ellip { color: var(--text-faint); padding: 0 4px; font-size: 12px; }
 
 /* ---------- 状态页 ---------- */
 .state {
@@ -760,13 +832,9 @@ function onDrop(e: DragEvent) {
 .dz-inner p { margin: 0; font-size: 14px; }
 
 @media (max-width: 768px) {
-  .toolbar { padding: 10px 12px; gap: 8px; }
-  .crumbs { order: 1; flex-basis: 100%; }
-  .tools { order: 2; width: 100%; }
-  .tools .btn-primary { margin-left: auto; }
+  .container { padding: 6px 10px 32px; }
+  .toolbar { overflow-x: auto; }
   .lbl { display: none; }
-  .sort-txt { display: none; }
-  .content { padding: 12px 12px 32px; }
   .entries.v-grid { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 10px; }
   .lhead { display: none; }
   .selbar { padding: 8px 12px; }

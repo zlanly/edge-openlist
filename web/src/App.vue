@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import LoginView from "./components/LoginView.vue";
 import SetupView from "./components/SetupView.vue";
 import TopBar from "./components/TopBar.vue";
-import MountSidebar from "./components/MountSidebar.vue";
+import StorageHome from "./components/StorageHome.vue";
 import FileBrowser from "./components/FileBrowser.vue";
 import SearchPanel from "./components/SearchPanel.vue";
 import UploadQueue from "./components/UploadQueue.vue";
@@ -40,7 +40,6 @@ const curPath = ref("/");
 const keyword = ref("");
 const searching = ref(false);
 
-const sidebarOpen = ref(false);
 const showMounts = ref(false);
 const showPwd = ref(false);
 const preview = ref<{ item: FileItem; list: FileItem[] } | null>(null);
@@ -82,7 +81,8 @@ function onPopState(e: PopStateEvent) {
   }
   const s = (e.state as { m?: number | null; p?: string } | null) || readUrl();
   const m = s.m ?? null;
-  if (m != null && mounts.value.some((x) => x.id === m)) curMountId.value = m;
+  if (m == null) curMountId.value = null; // 后退回到存储列表首页
+  else if (mounts.value.some((x) => x.id === m)) curMountId.value = m;
   curPath.value = s.p || "/";
   keyword.value = "";
 }
@@ -123,10 +123,10 @@ async function loadMounts(opts: { fromUrl?: boolean } = {}) {
       curPath.value = "/";
     }
     if (curMountId.value == null) {
+      // OpenList 形态：根目录就是存储列表，不自动跳进第一个挂载
       const want = opts.fromUrl ? readUrl().m : null;
       const hit = want != null ? list.find((m) => m.id === want) : undefined;
-      const fallback = list.find((m) => m.enabled) ?? list[0];
-      curMountId.value = (hit ?? fallback)?.id ?? null;
+      curMountId.value = hit?.id ?? null;
       if (hit && opts.fromUrl) curPath.value = readUrl().p;
     }
     syncUrl(true);
@@ -150,7 +150,6 @@ function resetSession() {
   preview.value = null;
   showMounts.value = false;
   showPwd.value = false;
-  sidebarOpen.value = false;
 }
 
 const offSession = onSessionExpired(() => {
@@ -184,6 +183,14 @@ async function logout() {
 function navigate(path: string) {
   if (path === curPath.value) return;
   curPath.value = path;
+  syncUrl();
+}
+// OpenList 的「回到首页」：存储列表
+function goHome() {
+  if (curMountId.value == null) return;
+  curMountId.value = null;
+  curPath.value = "/";
+  keyword.value = "";
   syncUrl();
 }
 function selectMount(id: number) {
@@ -248,24 +255,13 @@ onBeforeUnmount(() => {
       v-model:keyword="keyword"
       :user="user"
       :searching="searching"
-      @toggle-sidebar="sidebarOpen = !sidebarOpen"
+      @home="goHome"
       @open-mounts="showMounts = true"
       @change-password="showPwd = true"
       @logout="logout"
     />
 
     <div class="body">
-      <MountSidebar
-        :mounts="mounts"
-        :current="curMountId"
-        :open="sidebarOpen"
-        :is-admin="isAdmin"
-        :loading="mountsLoading"
-        @select="selectMount"
-        @close="sidebarOpen = false"
-        @manage="showMounts = true; sidebarOpen = false"
-      />
-
       <main class="main">
         <SearchPanel
           v-if="keyword"
@@ -273,6 +269,14 @@ onBeforeUnmount(() => {
           @open="openSearchResult"
           @exit="keyword = ''"
           @busy="searching = $event"
+        />
+        <StorageHome
+          v-else-if="!curMount"
+          :mounts="mounts"
+          :loading="mountsLoading"
+          :is-admin="isAdmin"
+          @select="selectMount"
+          @manage="showMounts = true"
         />
         <FileBrowser
           v-else
@@ -283,6 +287,7 @@ onBeforeUnmount(() => {
           @navigate="navigate"
           @preview="preview = $event"
           @manage="showMounts = true"
+          @home="goHome"
         />
       </main>
     </div>
