@@ -8,6 +8,9 @@ const API = "https://www.googleapis.com";
 const UPLOAD = "https://www.googleapis.com/upload/drive/v3/files";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const FOLDER_MIME = "application/vnd.google-apps.folder";
+// 「添加到我的云端硬盘」产生的共享条目实际是快捷方式：本体没有内容，
+// 直接下载会拿到一个 HTML 存根。必须取 shortcutDetails 解析到真实目标。
+const SHORTCUT_MIME = "application/vnd.google-apps.shortcut";
 
 // Google Drive 驱动（Drive API v3）
 export class GoogleDriveDriver extends CloudBase {
@@ -43,11 +46,12 @@ export class GoogleDriveDriver extends CloudBase {
     const segs = path.split("/").filter(Boolean);
     for (const seg of segs) {
       const q = `'${parent}' in parents and name = ${JSON.stringify(seg)} and trashed = false`;
-      const url = `${API}/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id)&pageSize=1&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+      const url = `${API}/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,mimeType,shortcutDetails)&pageSize=1&supportsAllDrives=true&includeItemsFromAllDrives=true`;
       const j = await this.jsonGet<{ files: any[] }>(url);
       const f = j.files?.[0];
       if (!f) throw new Error(`路径不存在: ${path}`);
-      parent = f.id;
+      // 快捷方式：解析到目标 ID，否则后续列表/下载都会作用在快捷方式存根上
+      parent = f.mimeType === SHORTCUT_MIME && f.shortcutDetails?.targetId ? f.shortcutDetails.targetId : f.id;
     }
     return parent;
   }
@@ -58,17 +62,22 @@ export class GoogleDriveDriver extends CloudBase {
     const out: FileItem[] = [];
     let pageToken = "";
     for (;;) {
-      const params = new URLSearchParams({ q, fields: "nextPageToken,files(id,name,mimeType,size,modifiedTime)", pageSize: "1000", supportsAllDrives: "true", includeItemsFromAllDrives: "true" });
+      const params = new URLSearchParams({ q, fields: "nextPageToken,files(id,name,mimeType,size,modifiedTime,shortcutDetails)", pageSize: "1000", supportsAllDrives: "true", includeItemsFromAllDrives: "true" });
       if (pageToken) params.set("pageToken", pageToken);
       const j = await this.jsonGet<{ files: any[]; nextPageToken?: string }>(`${API}/drive/v3/files?${params}`);
-      out.push(...(j.files || []).map((f) => ({
-        name: f.name,
-        path: joinPath(path, f.name),
-        is_dir: f.mimeType === FOLDER_MIME,
-        size: Number(f.size || 0),
-        modified: f.modifiedTime ? Date.parse(f.modifiedTime) : 0,
-        etag: f.id,
-      })));
+      out.push(...(j.files || []).map((f) => {
+        const isShortcut = f.mimeType === SHORTCUT_MIME;
+        // 快捷方式按目标定性：指向文件夹就当目录展示，点进去列的是目标内容
+        const mime = isShortcut ? f.shortcutDetails?.targetMimeType || "" : f.mimeType;
+        return {
+          name: f.name,
+          path: joinPath(path, f.name),
+          is_dir: mime === FOLDER_MIME,
+          size: Number(f.size || 0),
+          modified: f.modifiedTime ? Date.parse(f.modifiedTime) : 0,
+          etag: (isShortcut && f.shortcutDetails?.targetId) || f.id,
+        };
+      }));
       if (!j.nextPageToken || j.nextPageToken === pageToken) break;
       pageToken = j.nextPageToken;
     }

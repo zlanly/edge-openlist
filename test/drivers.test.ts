@@ -55,12 +55,24 @@ function json(body: any, status = 200) {
   if (u.includes("googleapis.com")) {
     if (u.includes("alt=media")) return new Response("gdata");
     if (u.includes("/upload/drive")) return new Response(null, { status: 200, headers: { Location: "https://up/gd-session" } });
-    // files?q= 解析（URL 被编码，先解码）
-    const dec = decodeURIComponent(u);
+    // files?q= 解析（URL 被编码，先解码；URLSearchParams 会把空格编成 +，一并还原）
+    const dec = decodeURIComponent(u).replaceAll("+", " ");
     const m = dec.match(/name = "([^"]+)"/);
     const name = m ? m[1] : "";
     if (name === "Movies") return json({ files: [{ id: "m1" }] });
     if (name === "clip.mp4") return json({ files: [{ id: "f1" }] });
+    // 快捷方式（「添加到我的云端硬盘」的共享条目）
+    if (name === "SharedDir") return json({ files: [{ id: "sc1", mimeType: "application/vnd.google-apps.shortcut", shortcutDetails: { targetId: "tgt1", targetMimeType: "application/vnd.google-apps.folder" } }] });
+    if (name === "link.mp4") return json({ files: [{ id: "sc2", mimeType: "application/vnd.google-apps.shortcut", shortcutDetails: { targetId: "tgt9", targetMimeType: "video/mp4" } }] });
+    // 根目录列表：含指向文件夹/文件的快捷方式
+    if (dec.includes("'root' in parents")) {
+      return json({ files: [
+        { name: "SharedDir", mimeType: "application/vnd.google-apps.shortcut", size: "0", modifiedTime: "2024-01-01T00:00:00Z", shortcutDetails: { targetId: "tgt1", targetMimeType: "application/vnd.google-apps.folder" } },
+        { name: "link.mp4", mimeType: "application/vnd.google-apps.shortcut", size: "0", modifiedTime: "2024-01-01T00:00:00Z", shortcutDetails: { targetId: "tgt9", targetMimeType: "video/mp4" } },
+      ] });
+    }
+    // 快捷方式目标目录的内容
+    if (dec.includes("'tgt1' in parents")) return json({ files: [{ name: "inner.mp4", mimeType: "video/mp4", size: "9", modifiedTime: "2024-01-01T00:00:00Z" }] });
     // 列目�?
     return json({ files: [{ name: "child", mimeType: "application/vnd.google-apps.folder", size: "5", modifiedTime: "2024-01-01T00:00:00Z" }] });
   }
@@ -215,6 +227,26 @@ async function main() {
     const d = await mk(GoogleDriveDriver, { clientId: "c", clientSecret: "s", refreshToken: "rt" });
     const res: any = await d.getContent("/Movies/clip.mp4");
     assert.equal(await res.text(), "gdata");
+  });
+  await test("Google Drive 快捷方式解析到共享目标（不再下载 HTML 存根）", async () => {
+    const d = await mk(GoogleDriveDriver, { clientId: "c", clientSecret: "s", refreshToken: "rt" });
+    // 列表中快捷方式按目标定性：指向文件夹 → 目录；指向文件 → 文件；etag 记录目标 ID
+    const root = await d.list("/");
+    assert.equal(root.length, 2);
+    assert.equal(root[0].name, "SharedDir");
+    assert.equal(root[0].is_dir, true, "指向文件夹的快捷方式应当作目录");
+    assert.equal(root[0].etag, "tgt1");
+    assert.equal(root[1].is_dir, false);
+    assert.equal(root[1].etag, "tgt9");
+    // 进入快捷方式目录：路径解析必须跟随到目标 ID，列的是共享目标的内容
+    const inner = await d.list("/SharedDir");
+    assert.ok(requests.some((r) => decodeURIComponent(r).replaceAll("+", " ").includes("'tgt1' in parents")), "应解析到快捷方式目标 tgt1 再列目录");
+    assert.equal(inner.length, 1);
+    assert.equal(inner[0].name, "inner.mp4");
+    // 下载快捷方式文件：作用于目标文件，而不是快捷方式存根
+    const res: any = await d.getContent("/link.mp4");
+    assert.equal(await res.text(), "gdata");
+    assert.ok(requests.some((r) => r.includes("files/tgt9") && r.includes("alt=media")), "应下载快捷方式指向的目标文件");
   });
 
   // 阿里云盘开放驱动
