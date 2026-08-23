@@ -277,10 +277,10 @@ export const api = {
     }
   },
 
-  // 初始化页状态：是否还需要初始化 + 是否配置了初始化密钥
-  async setupStatus(): Promise<{ needed: boolean; secretRequired: boolean }> {
-    const j = await request<{ needed: boolean; secretRequired?: boolean }>("/api/auth/needs-setup", { skipAuthRedirect: true });
-    return { needed: !!j?.needed, secretRequired: !!j?.secretRequired };
+  // 初始化页状态：是否还需要初始化 + 是否配置了初始化密钥 + 异常原因（如未绑定数据库）
+  async setupStatus(): Promise<{ needed: boolean; secretRequired: boolean; reason?: string }> {
+    const j = await request<{ needed: boolean; secretRequired?: boolean; reason?: string }>("/api/auth/needs-setup", { skipAuthRedirect: true });
+    return { needed: !!j?.needed, secretRequired: !!j?.secretRequired, reason: j?.reason };
   },
 
   // 初始化管理员账号（仅系统尚无任何用户时后端才会接受）

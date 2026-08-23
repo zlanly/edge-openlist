@@ -8,6 +8,7 @@ const emit = defineEmits<{ (e: "done"): void }>();
 const loading = ref(true);
 const needed = ref(false);
 const secretRequired = ref(false);
+const noDb = ref(false);
 const loadError = ref("");
 
 const username = ref("");
@@ -25,6 +26,7 @@ async function loadStatus() {
     const s = await api.setupStatus();
     needed.value = s.needed;
     secretRequired.value = s.secretRequired;
+    noDb.value = s.reason === "no-d1";
   } catch (e) {
     loadError.value = e instanceof ApiError ? e.message : "无法连接服务，请刷新重试";
   } finally {
@@ -83,6 +85,13 @@ onMounted(loadStatus);
       <div v-else-if="loadError" class="state">
         <p class="alert alert-error">{{ loadError }}</p>
         <button class="btn btn-primary btn-block" @click="loadStatus">重试</button>
+      </div>
+
+      <!-- 尚未绑定数据库：初始化无从谈起，给出明确的控制台操作指引 -->
+      <div v-else-if="noDb" class="state">
+        <p class="alert alert-warn">检测到本部署尚未绑定数据库，无法初始化管理员。</p>
+        <p class="steps">请到 Cloudflare 控制台补上绑定：<br />① Storage &amp; Databases → D1 → Create 创建一个数据库<br />② 回到 Worker → Settings → Bindings → Add → D1 Database Binding<br />③ 变量名必须填 <b>DB</b>，保存后等待自动重新部署，再回来刷新本页</p>
+        <button class="btn btn-primary btn-block" @click="loadStatus">我已绑定，重新检测</button>
       </div>
 
       <!-- 已完成初始化 -->
@@ -165,6 +174,8 @@ h1 { font-size: 21px; }
 
 .state { display: flex; flex-direction: column; gap: 12px; align-items: center; padding: 8px 0; }
 .state p { margin: 0; font-size: 14px; line-height: 1.6; }
+.steps { font-size: 13px; color: var(--text-soft); text-align: left; }
+.steps b { color: var(--text); }
 .ok { color: var(--brand); font-weight: 600; }
 
 .form { display: flex; flex-direction: column; gap: 14px; text-align: left; }
