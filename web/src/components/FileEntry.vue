@@ -113,16 +113,16 @@ function onContext(e: MouseEvent) {
 .entry.grid .more { position: absolute; top: 6px; right: 6px; }
 .entry.grid .pick { position: absolute; top: 8px; left: 8px; }
 
-/* ---------- 列表 ---------- */
+/* ---------- 列表（OpenList 风格：整行圆角卡片，悬浮轻微放大，无分隔线） ---------- */
 .entry.list {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 9px 10px;
+  padding: 9px 12px;
   border-radius: var(--radius);
-  border-bottom: 1px solid var(--border);
 }
-.entry.list:hover { background: var(--surface-2); }
+.entry.list + .entry.list { margin-top: 2px; }
+.entry.list:hover { background: var(--surface-2); transform: scale(1.01); }
 .entry.list .info { flex: 1; min-width: 0; }
 .entry.list .name { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .col { flex-shrink: 0; font-size: 12.5px; color: var(--text-soft); font-variant-numeric: tabular-nums; }

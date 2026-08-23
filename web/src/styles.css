@@ -6,45 +6,43 @@
    =========================================================================== */
 
 :root {
-  /* 品牌色 */
-  --brand: #f2864b;
-  --brand-strong: #e06f33;
-  --brand-soft: #fff1e6;
-  --brand-ring: rgba(242, 134, 75, 0.35);
-  --accent-2: #38b2a3;
+  /* 品牌色 —— 对齐 OpenList 默认主色 #1890ff */
+  --brand: #1890ff;
+  --brand-strong: #096dd9;
+  --brand-soft: #e6f4ff;
+  --brand-ring: rgba(24, 144, 255, 0.22);
+  --accent-2: #13c2c2;
 
-  /* 中性色 —— 浅色主题 */
-  --bg: #f7f4ef;
-  --bg-grad: radial-gradient(1200px 600px at 15% -10%, #fff6ed 0%, transparent 60%),
-             radial-gradient(1000px 500px at 100% 0%, #eef7f6 0%, transparent 55%),
-             #f7f4ef;
+  /* 中性色 —— 浅色主题（OpenList/hope-ui 风格：纯中性，无暖色渐变） */
+  --bg: #f5f6f8;
+  --bg-grad: #f5f6f8;
   --surface: #ffffff;
-  --surface-2: #fbf8f4;
-  --surface-3: #f3eee7;
-  --overlay: rgba(52, 42, 33, 0.42);
+  --surface-2: #f7f8fa;
+  --surface-3: #eef1f5;
+  --overlay: rgba(15, 23, 42, 0.45);
 
-  --text: #3d342b;
-  --text-soft: #857b6f;
-  --text-faint: #a89e92;
-  --border: #ebe3d9;
-  --border-strong: #ded3c5;
+  --text: #1f2329;
+  --text-soft: #6b7280;
+  --text-faint: #9ca3af;
+  --border: #e6e8ec;
+  --border-strong: #d5dae1;
 
-  --danger: #d9534f;
-  --danger-soft: #fdeceb;
-  --success: #2f9e6e;
-  --success-soft: #e8f6ef;
-  --warn: #d08b2c;
-  --warn-soft: #fdf3e2;
-  --info: #3d7fb8;
+  --danger: #f5222d;
+  --danger-soft: #fff1f0;
+  --success: #52c41a;
+  --success-soft: #f6ffed;
+  --warn: #faad14;
+  --warn-soft: #fffbe6;
+  --info: #1890ff;
 
   /* 形状与动效 */
   --radius-sm: 8px;
   --radius: 12px;
   --radius-lg: 18px;
   --radius-xl: 24px;
-  --shadow-sm: 0 1px 2px rgba(61, 52, 43, 0.06);
-  --shadow: 0 4px 16px rgba(61, 52, 43, 0.08);
-  --shadow-lg: 0 16px 48px rgba(61, 52, 43, 0.16);
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow: 0 4px 16px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 16px 48px rgba(15, 23, 42, 0.16);
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
   --dur: 0.22s;
 
@@ -55,34 +53,33 @@
 }
 
 [data-theme="dark"] {
-  --brand: #ff9a5e;
-  --brand-strong: #ffab77;
-  --brand-soft: rgba(255, 154, 94, 0.14);
-  --brand-ring: rgba(255, 154, 94, 0.4);
-  --accent-2: #4ecfbe;
+  --brand: #40a9ff;
+  --brand-strong: #69b1ff;
+  --brand-soft: rgba(64, 169, 255, 0.14);
+  --brand-ring: rgba(64, 169, 255, 0.32);
+  --accent-2: #36cfc9;
 
-  --bg: #17151a;
-  --bg-grad: radial-gradient(1200px 600px at 15% -10%, #2a2028 0%, transparent 60%),
-             radial-gradient(1000px 500px at 100% 0%, #17262b 0%, transparent 55%),
-             #17151a;
-  --surface: #201d24;
-  --surface-2: #26222b;
-  --surface-3: #2f2a34;
+  /* hope-ui 深色底（#17191c 系） */
+  --bg: #17191c;
+  --bg-grad: #17191c;
+  --surface: #1f2327;
+  --surface-2: #262b31;
+  --surface-3: #2e343b;
   --overlay: rgba(0, 0, 0, 0.62);
 
-  --text: #ece7e2;
-  --text-soft: #a79f98;
-  --text-faint: #7d756e;
-  --border: #332e39;
-  --border-strong: #423b49;
+  --text: #e6e8eb;
+  --text-soft: #a0a6ad;
+  --text-faint: #6f767e;
+  --border: #2c3138;
+  --border-strong: #3a4048;
 
-  --danger: #f07470;
-  --danger-soft: rgba(240, 116, 112, 0.14);
-  --success: #56c596;
-  --success-soft: rgba(86, 197, 150, 0.14);
-  --warn: #e5ab52;
-  --warn-soft: rgba(229, 171, 82, 0.14);
-  --info: #6ba9dd;
+  --danger: #ff7875;
+  --danger-soft: rgba(255, 120, 117, 0.14);
+  --success: #95de64;
+  --success-soft: rgba(149, 222, 100, 0.14);
+  --warn: #ffd666;
+  --warn-soft: rgba(255, 214, 102, 0.14);
+  --info: #69b1ff;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow: 0 4px 16px rgba(0, 0, 0, 0.45);

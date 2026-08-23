@@ -43,22 +43,22 @@ function setupPage(title: string, bodyHtml: string): string {
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>${title} · EdgeOpenList</title>
 <style>
-  :root{--accent:#5bb98c;--bg:#fbf7f0;--card:#fff;--text:#3a3a3a}
+  :root{--accent:#1890ff;--bg:#f5f6f8;--card:#fff;--text:#1f2329}
   *{box-sizing:border-box}
   body{margin:0;font-family:system-ui,-apple-system,"PingFang SC",sans-serif;background:var(--bg);color:var(--text);display:flex;min-height:100vh;align-items:center;justify-content:center;padding:20px}
-  .card{background:var(--card);border-radius:18px;padding:34px 40px;max-width:460px;width:100%;box-shadow:0 10px 40px rgba(91,185,140,.15);text-align:center}
+  .card{background:var(--card);border-radius:18px;padding:34px 40px;max-width:460px;width:100%;box-shadow:0 10px 40px rgba(24,144,255,.12);text-align:center}
   h1{margin:0 0 14px;color:var(--accent);font-size:22px}
   p{margin:8px 0;line-height:1.7}
-  .warn{color:#d98a3a;font-size:13px}
+  .warn{color:#faad14;font-size:13px}
   a.btn,button.btn{display:inline-block;margin-top:18px;padding:11px 26px;background:var(--accent);color:#fff;border:none;border-radius:12px;text-decoration:none;font-weight:600;font-size:15px;cursor:pointer}
   a.btn:hover,button.btn:hover{opacity:.92}
   button.btn:disabled{opacity:.6;cursor:wait}
-  code{background:#f3faf6;padding:2px 6px;border-radius:6px;font-family:ui-monospace,monospace}
+  code{background:#e6f4ff;padding:2px 6px;border-radius:6px;font-family:ui-monospace,monospace}
   .field{margin:12px 0;text-align:left}
-  .field label{display:block;font-size:13px;color:#6b6b6b;margin-bottom:5px}
-  .field input{width:100%;padding:10px 12px;border:1px solid #e3ded4;border-radius:10px;font-size:14px;background:#fff;color:var(--text)}
+  .field label{display:block;font-size:13px;color:#6b7280;margin-bottom:5px}
+  .field input{width:100%;padding:10px 12px;border:1px solid #d5dae1;border-radius:10px;font-size:14px;background:#fff;color:var(--text)}
   .field input:focus{outline:none;border-color:var(--accent)}
-  .err{color:#d05252;font-size:13px;min-height:18px;margin:8px 0 0}
+  .err{color:#f5222d;font-size:13px;min-height:18px;margin:8px 0 0}
 </style></head><body><div class="card"><h1>${title}</h1>${bodyHtml}</div></body></html>`;
 }
 

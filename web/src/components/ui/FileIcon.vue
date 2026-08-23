@@ -40,14 +40,15 @@ const path = computed(() => PATHS[props.kind] || PATHS.file);
 </template>
 
 <style scoped>
+/* OpenList 风格：图标统一用主色，靠形状区分类型，而不是彩虹色 */
 .file-icon { flex-shrink: 0; }
 .k-dir { color: var(--brand); fill: var(--brand-soft); }
-.k-image { color: #59a86b; }
-.k-video { color: #c06fd0; }
-.k-audio { color: #4f9bd6; }
-.k-pdf { color: #d9534f; }
+.k-image,
+.k-video,
+.k-audio,
+.k-pdf,
+.k-code,
+.k-archive { color: var(--brand); }
 .k-text { color: var(--text-soft); }
-.k-code { color: var(--accent-2); }
-.k-archive { color: #d0a04f; }
 .k-file { color: var(--text-faint); }
 </style>
