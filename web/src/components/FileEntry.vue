@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import FileIcon from "./ui/FileIcon.vue";
 import { formatSize, formatTime, kindOf } from "../utils/format";
 import type { FileItem } from "../api";
@@ -10,6 +10,8 @@ const props = defineProps<{
   selected: boolean;
   /** 已经进入多选状态时，复选框常驻显示 */
   picking: boolean;
+  /** 网格视图的图片缩略图 URL（有则替代图标展示） */
+  thumb?: string;
 }>();
 const emit = defineEmits<{
   (e: "open", item: FileItem): void;
@@ -21,6 +23,10 @@ const kind = computed(() => kindOf(props.item));
 const meta = computed(() =>
   props.item.is_dir ? "文件夹" : `${formatSize(props.item.size)} · ${formatTime(props.item.modified)}`
 );
+
+// 缩略图加载失败（链接过期 / 上游异常）就退回图标，不露破图
+const thumbBroken = ref(false);
+watch(() => props.thumb, () => (thumbBroken.value = false));
 
 function openMenu(e: MouseEvent) {
   emit("menu", { item: props.item, anchor: e.currentTarget as HTMLElement });
@@ -55,7 +61,10 @@ function onContext(e: MouseEvent) {
       />
     </label>
 
-    <FileIcon class="icon" :kind="kind" :size="view === 'grid' ? 40 : 22" />
+    <div v-if="view === 'grid' && thumb && !thumbBroken" class="thumb-box">
+      <img :src="thumb" :alt="item.name" loading="lazy" @error="thumbBroken = true" />
+    </div>
+    <FileIcon v-else class="icon" :kind="kind" :size="view === 'grid' ? 40 : 22" />
 
     <div class="info">
       <div class="name" :title="item.name">{{ item.name }}</div>
@@ -99,6 +108,15 @@ function onContext(e: MouseEvent) {
 }
 .entry.grid:hover { transform: translateY(-2px); box-shadow: var(--shadow); border-color: var(--border-strong); }
 .entry.grid .info { width: 100%; min-width: 0; }
+/* 图片缩略图（OpenList 网格形态）：等比裁满，圆角随卡片 */
+.entry.grid .thumb-box {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.entry.grid .thumb-box img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .entry.grid .name {
   font-size: 13px;
   line-height: 1.45;

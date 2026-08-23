@@ -56,6 +56,12 @@ async function load(opts: { silent?: boolean } = {}) {
     if (ctl.signal.aborted) return;
     items.value = res;
     selected.value = new Set();
+    // 静默刷新（上传完成回调）不重签缩略图，避免图片闪烁
+    if (!opts.silent) {
+      void loadReadme(res);
+      if (view.value === "grid") loadThumbs(res);
+      else thumbGen++; // 列表视图不签缩略图，让在途批次作废
+    }
   } catch (e) {
     if (ctl.signal.aborted) return;
     // 会话失效由 App 统一接管；其余错误就地展示 + 提供重试，绝不留白屏
@@ -77,6 +83,64 @@ watch(
   { immediate: true }
 );
 onBeforeUnmount(() => inflight?.abort());
+
+// ---------------------------------------------------------------------------
+// 网格缩略图（OpenList Images 形态）。
+// 列表加载完后为图片逐个签短期链接；并发 4、目录一切换整批作废，
+// 绝不把上个目录的缩略图贴到新目录上。
+// ---------------------------------------------------------------------------
+const thumbs = ref<Map<string, string>>(new Map());
+const THUMB_CONCURRENCY = 4;
+const THUMB_MAX = 80; // 单目录最多签这么多，防止超大目录把配额吃光
+let thumbGen = 0;
+
+function loadThumbs(list: FileItem[]) {
+  const mount = props.mount;
+  if (!mount) return;
+  const gen = ++thumbGen; // 使旧批次作废
+  thumbs.value = new Map();
+  const imgs = list.filter((i) => !i.is_dir && kindOf(i) === "image").slice(0, THUMB_MAX);
+  if (!imgs.length) return;
+  let idx = 0;
+  const worker = async () => {
+    for (;;) {
+      const cur = idx++;
+      if (cur >= imgs.length || gen !== thumbGen) return;
+      try {
+        const urls = await api.signUrls(mount.id, imgs[cur].path);
+        if (gen !== thumbGen) return;
+        thumbs.value.set(imgs[cur].path, urls.preview);
+      } catch {
+        // 缩略图拿不到就继续用图标，不打扰用户
+      }
+    }
+  };
+  void Promise.all(Array.from({ length: THUMB_CONCURRENCY }, worker));
+}
+
+// ---------------------------------------------------------------------------
+// 目录 README（OpenList 会把当前目录下的 readme 渲染在列表下方）
+// ---------------------------------------------------------------------------
+const readme = ref<string | null>(null);
+const README_LIMIT = 256 * 1024;
+let readmeGen = 0;
+
+async function loadReadme(list: FileItem[]) {
+  const mount = props.mount;
+  const gen = ++readmeGen;
+  readme.value = null;
+  if (!mount) return;
+  const f = list.find((i) => !i.is_dir && /^readme\.(md|txt)$/i.test(i.name));
+  if (!f || f.size > README_LIMIT) return;
+  try {
+    const urls = await api.signUrls(mount.id, f.path);
+    const res = await fetch(urls.preview);
+    if (gen !== readmeGen || !res.ok) return;
+    readme.value = await res.text();
+  } catch {
+    // 读不到就当没有
+  }
+}
 
 // 某个文件传完 → 如果正好是当前目录，静默刷新（不闪骨架屏）
 const offUploadDone = uploads.onDone((mountId, dir) => {
@@ -115,6 +179,10 @@ function applySortPref() {
 applySortPref();
 
 watch(view, (v) => writeLS("eol_view", v));
+// 从列表切到网格时补签缩略图（之前是列表视图没有签过）
+watch(view, (v) => {
+  if (v === "grid" && items.value.length && thumbs.value.size === 0) loadThumbs(items.value);
+});
 watch(
   () => [props.mount?.id, props.path] as const,
   () => applySortPref()
@@ -666,6 +734,7 @@ function onDrop(e: DragEvent) {
             :view="view"
             :selected="selected.has(it.path)"
             :picking="picking"
+            :thumb="view === 'grid' ? thumbs.get(it.path) || '' : ''"
             @open="openItem"
             @toggle="toggle"
             @menu="openEntryMenu"
@@ -683,6 +752,17 @@ function onDrop(e: DragEvent) {
           </template>
           <button class="btn btn-sm" :disabled="page >= pageCount" aria-label="下一页" @click="gotoPage(page + 1)">›</button>
         </div>
+      </div>
+
+      <!-- 目录 README（OpenList 同款：当前目录的 readme 渲染在列表下方） -->
+      <div v-if="readme" class="readme panel">
+        <div class="rm-head">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20M4 19.5A2.5 2.5 0 0 0 6.5 22H20V2H6.5A2.5 2.5 0 0 0 4 4.5v15Z" />
+          </svg>
+          README
+        </div>
+        <div class="rm-body">{{ readme }}</div>
       </div>
     </div>
 
@@ -860,6 +940,28 @@ function onDrop(e: DragEvent) {
 }
 .dz-inner svg { width: 44px; height: 44px; }
 .dz-inner p { margin: 0; font-size: 14px; }
+
+/* ---------- 目录 README ---------- */
+.readme { margin-top: 14px; padding: 16px 18px; border-radius: var(--radius-xl); }
+.rm-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-soft);
+  margin-bottom: 10px;
+}
+.rm-head svg { width: 15px; height: 15px; color: var(--brand); }
+.rm-body {
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 420px;
+  overflow-y: auto;
+}
 
 @media (max-width: 768px) {
   .container { padding: 6px 10px 32px; }
