@@ -2256,6 +2256,12 @@ const SCHEMAS: Record<string, DriverSchema> = {
         "required": true
       },
       {
+        "key": "js_token",
+        "label": "jsToken（选填）",
+        "type": "password",
+        "help": "浏览器 Cookie 里通常自带 jsToken，会自动解析；仅当报「无法通过 jsToken 校验」时才需要手动填写（从浏览器开发者工具的 Cookie 中复制 jsToken 的值）"
+      },
+      {
         "key": "order_by",
         "label": "Order by",
         "type": "select",

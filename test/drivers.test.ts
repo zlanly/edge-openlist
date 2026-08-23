@@ -174,7 +174,7 @@ function json(body: any, status = 200) {
   // Terabox：jsToken 自愈链路
   if (u.includes("terabox.com/api/check/login")) {
     const js = new URL(u).searchParams.get("jsToken") || "";
-    if (js === "tb-fresh" || js === "tb-home") return json({ errno: 0 });
+    if (js === "tb-fresh" || js === "tb-home" || js === "tb-cookie") return json({ errno: 0 });
     // 这类 Cookie 模拟「错误响应体里不带新令牌」，逼驱动走首页提取
     if (((opts.headers as any)?.Cookie || "").includes("noBodyToken")) return json({ errno: 450016 });
     return json({ errno: 4000023, jsToken: "tb-fresh" });
@@ -490,6 +490,14 @@ async function main() {
     assert.equal(items[0].name, "t.mp4");
     const sess = kv.store.get("terabox:sess:50") || "";
     assert.ok(sess.includes("tb-fresh"), "恢复到的新令牌应写入会话缓存");
+  });
+  await test("Terabox 直接用 Cookie 自带的 jsToken（无需抓首页）", async () => {
+    const d = await mk(TeraboxDriver, { cookie: "noBodyToken=1; jsToken=tb-cookie" }, 52);
+    const items = await d.list("/");
+    assert.equal(items.length, 1);
+    const sess = kv.store.get("terabox:sess:52") || "";
+    assert.ok(sess.includes("tb-cookie"), "Cookie 自带的令牌应写入会话缓存");
+    assert.ok(!requests.includes("GET https://jp.terabox.com"), "令牌来自 Cookie 时不应再抓首页");
   });
   await test("Terabox 响应体无令牌时从首页备选样式提取（不再整挂载瘫痪）", async () => {
     const d = await mk(TeraboxDriver, { cookie: "noBodyToken=1" }, 51);

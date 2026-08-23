@@ -57,13 +57,21 @@ export class TeraboxDriver extends CloudBase {
     this.urlDomainPrefix = "jp";
     this.jsToken = "";
 
+    // 令牌优先级：手动配置 > Cookie 自带 > KV 缓存 > 现取。
+    // 浏览器会话 Cookie 里本来就带 jsToken 项，直接解析出来最可靠——
+    // 抓首页 HTML 在风控/区域跳转/页面改版下都可能拿不到（表现为 4000023 死循环）。
+    const fromCfg = (this.cfgStr("js_token") || "").trim();
+    const fromCookie = this.jsTokenFromCookie();
+    if (fromCfg) this.jsToken = fromCfg;
+    else if (fromCookie) this.jsToken = fromCookie;
+
     // 原实现每次构造驱动都同步打一次 /api/check/login：
     // 列个目录要 2 次往返，点开一个文件要 4 次，白白吃掉延迟和 subrequest 配额。
-    // 改为从 KV 复用上次的 jsToken / 域名前缀，只有在真正调用 API 且被上游
+    // 改为从 KV 复用上次的域名前缀，只有在真正调用 API 且被上游
     // 判定令牌失效（errno 4000023/450016）时才现取 —— 少一次强制往返。
     const cached = await this.loadSession();
     if (cached) {
-      this.jsToken = cached.jsToken || "";
+      if (!this.jsToken && cached.jsToken) this.jsToken = cached.jsToken;
       if (cached.prefix) {
         this.urlDomainPrefix = cached.prefix;
         this.baseUrl = `https://${cached.prefix}.terabox.com`;
@@ -77,6 +85,12 @@ export class TeraboxDriver extends CloudBase {
       throw new Error("terabox: Cookie 登录校验失败，请到管理后台更新 Cookie");
     }
     await this.saveSession();
+  }
+
+  /** 从会话 Cookie 里解析 jsToken 项（浏览器复制的 Cookie 通常自带）。 */
+  private jsTokenFromCookie(): string {
+    const m = this.cookie.match(/(?:^|;\s*)jsToken=([^;]+)/);
+    return m ? decodeURIComponent(m[1]) : "";
   }
 
   private async loadSession(): Promise<{ jsToken: string; prefix: string } | null> {
@@ -175,6 +189,13 @@ export class TeraboxDriver extends CloudBase {
       // 有就直接换，省掉一次首页抓取——这也是「列表报错但其他接口正常」的常见情形。
       if (typeof json.jsToken === "string" && json.jsToken && json.jsToken !== this.jsToken) {
         this.jsToken = json.jsToken;
+        await this.saveSession();
+        return this.apiRequest(method, pathOrUrl, params, body, contentType, depth + 1);
+      }
+      // 再试 Cookie 里自带的令牌：手动配置/缓存的令牌过期时它往往还是有效的
+      const fromCookie = this.jsTokenFromCookie();
+      if (fromCookie && fromCookie !== this.jsToken) {
+        this.jsToken = fromCookie;
         await this.saveSession();
         return this.apiRequest(method, pathOrUrl, params, body, contentType, depth + 1);
       }
