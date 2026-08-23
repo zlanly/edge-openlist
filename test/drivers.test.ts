@@ -1,6 +1,7 @@
 // 各云盘驱动的自验证：用内�? KV 模拟 + 全局 fetch 模拟，断言列表解析 / 下载直链 / 令牌刷新 / 路径解析�?
 // 注意：仅验证逻辑�? API 交互结构，真实联调需对应账号凭据�?
 import assert from "node:assert";
+import { createHash as _ch } from "node:crypto";
 import { OneDriveDriver } from "../worker/src/drivers/onedrive";
 import { GoogleDriveDriver } from "../worker/src/drivers/googledrive";
 import { AliyunDriveDriver } from "../worker/src/drivers/aliyun";
@@ -17,6 +18,7 @@ import { VirtualDriver } from "../worker/src/drivers/virtual";
 import { UrlTreeDriver } from "../worker/src/drivers/url_tree";
 import { PikPakDriver } from "../worker/src/drivers/pikpak";
 import { Pan123Driver } from "../worker/src/drivers/123";
+import { TeraboxDriver } from "../worker/src/drivers/terabox";
 
 // ---------- 内存 KV 模拟 ----------
 class KVMock {
@@ -32,6 +34,7 @@ const kv = new KVMock();
 const env: any = { KV: kv, R2: {}, DB: {}, ASSETS: {}, JWT_SECRET: "x", APP_TITLE: "t" };
 
 const requests: string[] = [];
+const tbChunkMd5 = _ch("md5").update("hello-terabox").digest("hex");
 const authLog: string[] = []; // ��¼ Authorization ͷ�����ڶ���ǩ��/Bearer
 function json(body: any, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -168,6 +171,32 @@ function json(body: any, status = 200) {
       { FileName: "a.mp4", FileId: 1, Type: 0, Size: "123", UpdateAt: "2024-01-01T00:00:00Z" },
       { FileName: "dir", FileId: 2, Type: 1, Size: "0", UpdateAt: "" },
     ], Next: "-1", Total: 2 } });
+  // Terabox：jsToken 自愈链路
+  if (u.includes("terabox.com/api/check/login")) {
+    const js = new URL(u).searchParams.get("jsToken") || "";
+    if (js === "tb-fresh" || js === "tb-home") return json({ errno: 0 });
+    // 这类 Cookie 模拟「错误响应体里不带新令牌」，逼驱动走首页提取
+    if (((opts.headers as any)?.Cookie || "").includes("noBodyToken")) return json({ errno: 450016 });
+    return json({ errno: 4000023, jsToken: "tb-fresh" });
+  }
+  if (u.includes("terabox.com/api/list")) {
+    return json({ errno: 0, list: [{ server_filename: "t.mp4", size: 5, isdir: 0, server_mtime: 1700000000, fs_id: 1 }] });
+  }
+  if (u.includes("-data.terabox.com/rest/2.0/pcs/file") && u.includes("method=locateupload")) {
+    return json({ host: "c-jp-data.terabox.com" });
+  }
+  if (u.includes("terabox.com/api/precreate")) return json({ errno: 0, uploadid: "tb-up1", return_type: 1 });
+  if (u.includes("terabox.com/rest/2.0/pcs/superfile2")) return json({ md5: tbChunkMd5 });
+  if (u.includes("terabox.com/api/create")) return json({ errno: 0 });
+
+  // 首页 HTML：只含备选样式（未编码）的令牌注入，验证多模式提取
+  if (u === "https://jp.terabox.com" || u === "https://www.terabox.com") {
+    return new Response('<html>window.jsToken = "tb-home"</html>', {
+      status: 200,
+      headers: { "content-type": "text/html" },
+    });
+  }
+
   // 通用下载直链
   if (u.startsWith("https://dl/") || u.startsWith("https://ali/dl") || u.startsWith("https://quark/dl")) return new Response("filedata");
   return json({ error: "unmocked", url: u }, 404);
@@ -452,6 +481,39 @@ async function main() {
     assert.ok(requests.some((r) => r.startsWith("PUT https://ali/part")), "Ӧ PUT �ϴ���Ƭ");
     assert.ok(requests.some((r) => r.includes("v2/file/complete")), "Ӧ����ϴ�");
   });
+
+  // Terabox：jsToken 自愈
+  await test("Terabox 从错误响应体直接恢复 jsToken（列表可用）", async () => {
+    const d = await mk(TeraboxDriver, { cookie: "BDUSS=x" }, 50);
+    const items = await d.list("/");
+    assert.equal(items.length, 1);
+    assert.equal(items[0].name, "t.mp4");
+    const sess = kv.store.get("terabox:sess:50") || "";
+    assert.ok(sess.includes("tb-fresh"), "恢复到的新令牌应写入会话缓存");
+  });
+  await test("Terabox 响应体无令牌时从首页备选样式提取（不再整挂载瘫痪）", async () => {
+    const d = await mk(TeraboxDriver, { cookie: "noBodyToken=1" }, 51);
+    const items = await d.list("/");
+    assert.equal(items.length, 1);
+    const sess = kv.store.get("terabox:sess:51") || "";
+    assert.ok(sess.includes("tb-home"), "首页提取到的令牌应写入会话缓存");
+  });
+  await test("Terabox 上传链路（locateupload→precreate→分片→create）", async () => {
+    const d = await mk(TeraboxDriver, { cookie: "BDUSS=x" }, 50);
+    requests.length = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode("hello-terabox"));
+        c.close();
+      },
+    });
+    await d.putContent!("/错题.docx", stream as any, "application/octet-stream", 13);
+    assert.ok(requests.some((r) => r.includes("method=locateupload")), "应定位上传域名");
+    assert.ok(requests.some((r) => r.includes("/api/precreate")), "应预创建文件");
+    assert.ok(requests.some((r) => r.includes("/rest/2.0/pcs/superfile2")), "应上传分片");
+    assert.ok(requests.some((r) => r.includes("/api/create")), "应提交文件");
+  });
+
 
   console.log(`\nȫ�� ${passed} ������֤ͨ�� ?`);
 }

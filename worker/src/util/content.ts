@@ -1,4 +1,5 @@
 import { notFound, rateLimited, upstreamError } from "./errors";
+import { isUselessContentType, mimeByExt } from "./mime";
 
 // 内容分发的公共实现。fs / share / dav 三条路径过去各写了一份，
 // 于是「不可变头」这个 bug 也被复制了三份。这里统一收口。
@@ -48,6 +49,12 @@ export function buildContentResponse(upstream: Response, name: string, inline: b
     "Content-Disposition",
     `${inline ? "inline" : "attachment"}; filename="${asciiFallback(name)}"; filename*=UTF-8''${encodeURIComponent(name)}`
   );
+  // 上游直链常不给类型（或给 application/octet-stream），而下面又强制 nosniff，
+  // 两者叠加浏览器就拒绝渲染 —— 按扩展名补上真实类型（PDF 预览失效的根因）。
+  if (isUselessContentType(headers.get("Content-Type"))) {
+    const guess = mimeByExt(name);
+    if (guess) headers.set("Content-Type", guess);
+  }
   if (!headers.has("Accept-Ranges")) headers.set("Accept-Ranges", "bytes");
   if (!headers.has("Cache-Control")) headers.set("Cache-Control", "private, max-age=0");
   // 预览任意文件时防止把 HTML/SVG 当页面执行（存储型 XSS）

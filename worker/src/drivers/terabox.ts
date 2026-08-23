@@ -30,6 +30,8 @@ export class TeraboxDriver extends CloudBase {
   private jsToken = "";
   private urlDomainPrefix = "jp";
   private baseUrl = "https://www.terabox.com";
+  /** jsToken 刷新是否已失败过。失败后不再反复抓首页，直接带现有令牌重试一次兜底。 */
+  private tokenRefreshFailed = false;
 
   private cfgStr(k: string): string {
     return (this.cfg as Record<string, unknown>)[k] as string;
@@ -169,9 +171,21 @@ export class TeraboxDriver extends CloudBase {
 
     const errno = json.errno;
     if (errno === 4000023 || errno === 450016) {
-      await this.resetJsToken();
-      await this.saveSession();
-      return this.apiRequest(method, pathOrUrl, params, body, contentType, depth + 1);
+      // 上游经常把新的 jsToken 直接塞在错误响应体里（网页端就是靠这个自愈的），
+      // 有就直接换，省掉一次首页抓取——这也是「列表报错但其他接口正常」的常见情形。
+      if (typeof json.jsToken === "string" && json.jsToken && json.jsToken !== this.jsToken) {
+        this.jsToken = json.jsToken;
+        await this.saveSession();
+        return this.apiRequest(method, pathOrUrl, params, body, contentType, depth + 1);
+      }
+      if (!this.tokenRefreshFailed) {
+        this.tokenRefreshFailed = !(await this.resetJsToken());
+        await this.saveSession();
+        // 刷新失败也带现有令牌（可能为空）再试最后一次：
+        // 实测不少接口并不严格校验 jsToken，空令牌也能过。
+        return this.apiRequest(method, pathOrUrl, params, body, contentType, depth + 1);
+      }
+      throw new Error("terabox: 无法通过 jsToken 校验，且首页未返回令牌，Cookie 可能已失效");
     }
     if (errno === -6) {
       const prefix = r.headers.get("Url-Domain-Prefix");
@@ -187,18 +201,45 @@ export class TeraboxDriver extends CloudBase {
     return json;
   }
 
-  // 从主页 HTML 提取 jsToken（与 Go resetJsToken 一致）
-  private async resetJsToken(): Promise<void> {
-    const r = await fetch(this.baseUrl, { headers: await this.hdrs() });
-    if (!r.ok) throw new Error(`terabox: 获取 jsToken 失败（首页 ${r.status}）`);
+  // 从主页 HTML 提取 jsToken（与 Go resetJsToken 一致）。
+  // 改为「尽力而为」：取不到返回 false 而不是抛错 —— 不少接口对空令牌并不严格，
+  // 原实现一抛错整个挂载就瘫痪，表现为「列表打不开但个别接口又正常」。
+  private async resetJsToken(): Promise<boolean> {
+    let r: Response;
+    try {
+      r = await fetch(this.baseUrl, { headers: await this.hdrs() });
+    } catch {
+      return false;
+    }
+    if (!r.ok) return false;
     const html = await r.text();
+    // 主模式：URL 编码的 fn("...") 注入脚本
     const start = "`function%20fn%28a%29%7Bwindow.jsToken%20%3D%20a%7D%3Bfn%28\"";
     const end = "%22%29`";
     const i = html.indexOf(start);
-    if (i < 0) throw new Error("terabox: 未找到 jsToken，Cookie 可能已失效");
-    const j = html.indexOf(end, i + start.length);
-    if (j < 0) throw new Error("terabox: jsToken 解析失败");
-    this.jsToken = html.substring(i + start.length, j);
+    if (i >= 0) {
+      const j = html.indexOf(end, i + start.length);
+      if (j > i) {
+        this.jsToken = html.substring(i + start.length, j);
+        return true;
+      }
+    }
+    // 备选模式：首页版本不同时令牌可能以未编码形式出现在页面里
+    for (const [s, e] of [
+      ['window.jsToken = "', '"'],
+      ["window.jsToken = '", "'"],
+      ['"jsToken":"', '"'],
+    ] as const) {
+      const k = html.indexOf(s);
+      if (k >= 0) {
+        const m = html.indexOf(e, k + s.length);
+        if (m > k && m - k - s.length < 256) {
+          this.jsToken = html.substring(k + s.length, m);
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   // ---- 路径列表 ----
