@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import type { AppEnv, Env } from "../types";
 import { getStore } from "../db/store";
+import { initDb } from "../db/init";
 import { createToken, hashPassword, verifyPassword } from "../util/auth";
 import { authMiddleware } from "../middleware/auth";
 import { badCredentials, badRequest, forbidden, rateLimited } from "../util/errors";
@@ -36,7 +37,7 @@ async function recordLoginFail(env: Env, c: Context<AppEnv>): Promise<void> {
   await kv.put(key, String(n), { expirationTtl: LOGIN_WINDOW_S });
 }
 
-// 首次部署引导页（HTML）。初始化不会自动创建固定凭据，必须由部署者通过受保护的 POST 接口完成。
+// 首次部署引导页（HTML）。初始化不会自动创建固定凭据，账号由部署者在本页表单里亲手设置。
 function setupPage(title: string, bodyHtml: string): string {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -48,12 +49,16 @@ function setupPage(title: string, bodyHtml: string): string {
   .card{background:var(--card);border-radius:18px;padding:34px 40px;max-width:460px;width:100%;box-shadow:0 10px 40px rgba(91,185,140,.15);text-align:center}
   h1{margin:0 0 14px;color:var(--accent);font-size:22px}
   p{margin:8px 0;line-height:1.7}
-  .cred{font-size:17px;background:#f3faf6;border:1px dashed var(--accent);border-radius:12px;padding:12px;margin:16px 0}
-  .cred b{color:var(--accent);font-family:ui-monospace,monospace;font-size:18px}
   .warn{color:#d98a3a;font-size:13px}
-  a.btn{display:inline-block;margin-top:18px;padding:11px 26px;background:var(--accent);color:#fff;border-radius:12px;text-decoration:none;font-weight:600}
-  a.btn:hover{opacity:.92}
+  a.btn,button.btn{display:inline-block;margin-top:18px;padding:11px 26px;background:var(--accent);color:#fff;border:none;border-radius:12px;text-decoration:none;font-weight:600;font-size:15px;cursor:pointer}
+  a.btn:hover,button.btn:hover{opacity:.92}
+  button.btn:disabled{opacity:.6;cursor:wait}
   code{background:#f3faf6;padding:2px 6px;border-radius:6px;font-family:ui-monospace,monospace}
+  .field{margin:12px 0;text-align:left}
+  .field label{display:block;font-size:13px;color:#6b6b6b;margin-bottom:5px}
+  .field input{width:100%;padding:10px 12px;border:1px solid #e3ded4;border-radius:10px;font-size:14px;background:#fff;color:var(--text)}
+  .field input:focus{outline:none;border-color:var(--accent)}
+  .err{color:#d05252;font-size:13px;min-height:18px;margin:8px 0 0}
 </style></head><body><div class="card"><h1>${title}</h1>${bodyHtml}</div></body></html>`;
 }
 
@@ -61,31 +66,102 @@ function html(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "Content-Type": "text/html; charset=utf-8" } });
 }
 
-// 初始化说明页：GET 请求只提供部署指引，绝不创建固定账号。
+// 初始化表单页：部署者（或首个访问者）在这里直接设置管理员账号。
+// 若部署时配置了 BOOTSTRAP_SECRET，表单会额外要求填写初始化密钥；未配置则无需密钥。
+function setupForm(secretRequired: boolean): string {
+  const secretField = secretRequired
+    ? `<div class="field"><label for="su-secret">初始化密钥（BOOTSTRAP_SECRET）</label>
+       <input id="su-secret" type="password" autocomplete="off" placeholder="部署时设置的初始化密钥" /></div>`
+    : "";
+  return setupPage(
+    "初始化管理员",
+    `<p>系统尚未创建管理员账号，请在下方设置。</p>
+     <form id="su-form">
+       <div class="field"><label for="su-user">用户名</label>
+         <input id="su-user" autocomplete="username" placeholder="例如 admin" maxlength="64" /></div>
+       <div class="field"><label for="su-pass">密码</label>
+         <input id="su-pass" type="password" autocomplete="new-password" placeholder="至少 12 位" /></div>
+       <div class="field"><label for="su-pass2">确认密码</label>
+         <input id="su-pass2" type="password" autocomplete="new-password" placeholder="再输入一次" /></div>
+       ${secretField}
+       <p class="err" id="su-err" role="alert"></p>
+       <button class="btn" type="submit" id="su-btn">完成初始化</button>
+     </form>
+     ${secretRequired ? "" : '<p class="warn">尚未配置初始化密钥：任何能访问本地址的人都可以完成初始化，请在部署后尽快设置。</p>'}
+<script>
+(function () {
+  var form = document.getElementById("su-form");
+  var btn = document.getElementById("su-btn");
+  var err = document.getElementById("su-err");
+  form.addEventListener("submit", function (e) {
+    e.preventDefault();
+    err.textContent = "";
+    var username = document.getElementById("su-user").value.trim();
+    var password = document.getElementById("su-pass").value;
+    var pass2 = document.getElementById("su-pass2").value;
+    var secretEl = document.getElementById("su-secret");
+    if (!username) { err.textContent = "请输入用户名"; return; }
+    if (password.length < 12) { err.textContent = "密码至少 12 位"; return; }
+    if (password !== pass2) { err.textContent = "两次输入的密码不一致"; return; }
+    btn.disabled = true;
+    btn.textContent = "初始化中…";
+    fetch("/api/auth/setup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: username,
+        password: password,
+        bootstrapSecret: secretEl ? secretEl.value : ""
+      })
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, j: j }; });
+    }).then(function (res) {
+      if (res.ok) {
+        document.querySelector(".card").innerHTML =
+          '<h1>初始化完成</h1><p>管理员账号已创建，现在可以登录使用了。</p>' +
+          '<a class="btn" href="/">前往登录</a>';
+      } else {
+        err.textContent = (res.j && (res.j.message || res.j.error)) || "初始化失败，请重试";
+        btn.disabled = false;
+        btn.textContent = "完成初始化";
+      }
+    }).catch(function () {
+      err.textContent = "网络错误，请重试";
+      btn.disabled = false;
+      btn.textContent = "完成初始化";
+    });
+  });
+})();
+</script>`
+  );
+}
+
 export async function setupHandler(c: Context<AppEnv>) {
   if (!c.env.DB || typeof (c.env.DB as any).prepare !== "function") {
     return html(
       setupPage(
         "尚未绑定 D1",
         `<p>检测到本 Worker <b>未绑定 D1 数据库</b>，无法初始化管理员。</p>
-         <p>请先绑定名为 <code>DB</code> 的 D1 数据库，再配置 <code>BOOTSTRAP_SECRET</code>。</p>
+         <p>请到 Cloudflare 控制台为 Worker 添加名为 <code>DB</code> 的 D1 数据库绑定，等待自动重新部署后再回来。</p>
          <a class="btn" href="/">返回首页</a>`
       )
     );
   }
+  await ensureDbForSetup(c.env);
   const store = getStore(c.env);
   if (await store.countUsers() > 0) {
     return html(setupPage("已完成初始化", `<p>系统已存在管理员账号，请直接 <a href="/">登录</a>。</p>`));
   }
-  return html(
-    setupPage(
-      "等待初始化",
-      `<p>系统尚未创建管理员账号。</p>
-       <p>请由部署者配置一次性 <code>BOOTSTRAP_SECRET</code>，然后使用 POST 请求提交自定义用户名和强密码。</p>
-       <p class="warn">不会自动生成或展示默认密码。</p>`
-    ),
-    409
-  );
+  return html(setupForm(Boolean(c.env.BOOTSTRAP_SECRET)));
+}
+
+// /setup 不走 /api/* 中间件，这里单独保证建表完成再读写用户表
+async function ensureDbForSetup(env: Env): Promise<void> {
+  try {
+    await initDb(env);
+  } catch {
+    // 建表失败会在后续查询时暴露真实错误，这里不吞流程
+  }
 }
 
 function constantTimeEqual(a: string, b: string): boolean {
@@ -99,8 +175,8 @@ function constantTimeEqual(a: string, b: string): boolean {
 
 export async function setupPostHandler(c: Context<AppEnv>) {
   if (!c.env.DB || typeof (c.env.DB as any).prepare !== "function") throw badRequest("尚未绑定 D1 数据库");
+  await ensureDbForSetup(c.env);
   const secret = c.env.BOOTSTRAP_SECRET || "";
-  if (!secret) throw forbidden("未配置初始化密钥");
   let body: { username?: string; password?: string; bootstrapSecret?: string };
   try {
     body = await c.req.json();
@@ -109,7 +185,8 @@ export async function setupPostHandler(c: Context<AppEnv>) {
   }
   const username = (body.username || "").trim();
   const password = body.password || "";
-  if (!constantTimeEqual(body.bootstrapSecret || "", secret)) throw forbidden("初始化密钥错误");
+  // 配置了初始化密钥时强制校验；未配置时允许首个访问者直接初始化（仍受「零用户」限制）
+  if (secret && !constantTimeEqual(body.bootstrapSecret || "", secret)) throw forbidden("初始化密钥错误");
   if (!username || username.length > 64 || password.length < 12 || password.length > 256) {
     throw badRequest("用户名不能为空，密码长度必须为 12 至 256 位");
   }
@@ -124,7 +201,7 @@ export async function setupPostHandler(c: Context<AppEnv>) {
   return c.json({ ok: true }, 201);
 }
 
-// 兼容旧路径，但 GET 仅显示说明页；真正初始化必须使用受保护 POST。
+// GET /setup 展示表单页，POST /api/auth/setup 完成初始化（见 setupPostHandler）。
 
 auth.post("/setup", setupPostHandler);
 
