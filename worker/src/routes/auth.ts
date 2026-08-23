@@ -63,7 +63,8 @@ function setupPage(title: string, bodyHtml: string): string {
 }
 
 function html(body: string, status = 200): Response {
-  return new Response(body, { status, headers: { "Content-Type": "text/html; charset=utf-8" } });
+  // no-store：初始化页必须永远实时 —— 代理/浏览器缓存旧版说明页会表现为「点了没反应」
+  return new Response(body, { status, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
 }
 
 // 初始化表单页：部署者（或首个访问者）在这里直接设置管理员账号。

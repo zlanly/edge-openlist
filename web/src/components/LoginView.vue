@@ -90,7 +90,7 @@ onMounted(async () => {
         </button>
       </form>
 
-      <a v-if="needSetup" class="setup" href="/setup">
+      <a v-if="needSetup" class="setup" href="/setup?init=1">
         首次使用？点此初始化管理员账号
       </a>
     </div>
