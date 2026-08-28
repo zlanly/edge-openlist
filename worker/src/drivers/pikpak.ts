@@ -327,35 +327,14 @@ export class PikPakDriver extends CloudBase {
 }
 
 // ---- OSS 流式直传（WebCrypto HMAC-SHA1 签名）----
-async function hmacSha1Base64(key: string, data: string): Promise<string> {
-  const enc = new TextEncoder();
-  const ck = await crypto.subtle.importKey("raw", enc.encode(key), { name: "HMAC", hash: { name: "SHA-1" } }, false, ["sign"]);
-  const sig = await crypto.subtle.sign("HMAC", ck, enc.encode(data));
-  let bin = "";
-  const b = new Uint8Array(sig);
-  for (const x of b) bin += String.fromCharCode(x);
-  return btoa(bin);
-}
-
-async function ossSign(method: string, contentType: string, date: string, token: string, bucket: string, key: string, secret: string, accessKey: string): Promise<string> {
-  const canonHeaders = token ? `x-oss-security-token:${token}\n` : "";
-  const resource = `/${bucket}/${key}`;
-  const stringToSign = `${method}\n\n${contentType}\n${date}\n${canonHeaders}${resource}`;
-  const sig = await hmacSha1Base64(secret, stringToSign);
-  return `OSS ${accessKey}:${sig}`;
-}
-
-async function ossPutStream(endpoint: string, bucket: string, key: string, ak: string, sk: string, token: string, body: Uint8Array | ReadableStream, size: number): Promise<void> {
+async function ossPutStream(endpoint: string, bucket: string, key: string, _ak: string, _sk: string, token: string, body: Uint8Array | ReadableStream, size: number): Promise<void> {
+  // PikPak 返回的是临时 OSS 上传参数。参考 OpenListNext 的已有驱动，
+  // 这里只发送长度和 STS token，不再自行拼 OSS V1 Authorization：
+  // endpoint/STS 参数已经由 PikPak 生成，额外签名会导致 OSS 返回 403。
   const url = `https://${bucket}.${endpoint}/${key}`;
-  const date = new Date().toUTCString();
-  const auth = await ossSign("PUT", "application/octet-stream", date, token, bucket, key, sk, ak);
   const headers: Record<string, string> = {
-    Authorization: auth,
-    "Content-Type": "application/octet-stream",
     "Content-Length": String(size),
-    Date: date,
     "x-oss-security-token": token,
-    "User-Agent": "aliyun-sdk-android/2.9.13(Linux/Android 14/M2004j7ac;UKQ1.231108.001)",
   };
   const r = await fetch(url, { method: "PUT", headers, body });
   if (!r.ok) throw new Error(`pikpak OSS 上传失败 ${r.status}: ${await r.text().catch(() => "")}`);
