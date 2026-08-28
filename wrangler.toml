@@ -14,10 +14,20 @@ not_found_handling = "single-page-application"
 [build]
 command = "npm run build:web"
 
+# 生产绑定：与当前 Worker 使用的 Cloudflare 资源保持一致。
+[[d1_databases]]
+binding = "DB"
+database_name = "openlist"
+database_id = "06e045f0-d834-44b6-ad7d-197ffd3932fb"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "011c31d4d1114495bd89138839b254f2"
+
 # ─────────────────────────────────────────────────────────────
 # 部署策略（重要）
 # 本应用强制使用 D1 作为结构化存储（用户 / 挂载 / 分享 / 文件索引）。
-# 为让「部署时不需要任何绑定」，本文件【不声明任何 D1 / KV / R2 绑定】，
+# D1 与 KV 已在上方声明，后续从 GitHub 自动部署时会持续保留绑定。
 # 先纯代码部署上线；部署完成后，再到 Cloudflare 控制台为 Worker 添加绑定：
 #   Settings → Bindings   添加 D1（绑定名 DB，必选）、KV（绑定名 KV，令牌缓存）、R2（绑定名 R2，可选）
 #   Settings → Variables  添加 JWT_SECRET（建议用 Secrets，不可读取）
