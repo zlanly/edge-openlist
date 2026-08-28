@@ -57,7 +57,13 @@ export class PikPakDriver extends CloudBase {
       else await this.login();
     } catch (e: any) {
       // 令牌过期时，若仍有账号密码，按官方驱动回退到重新登录。
-      if (this.cfgStr("username") && this.cfgStr("password") && /失效|invalid|4126/i.test(String(e?.message || e))) {
+      if (
+        this.cfgStr("username") &&
+        this.cfgStr("password") &&
+        /失效|invalid|permission_denied|invalid_grant|unauthorized|4126/i.test(String(e?.message || e))
+      ) {
+        // 旧 refresh_token 可能已被服务端撤销（permission_denied），但账号密码仍可用时
+        // 按 OpenListNext 的行为回退登录，避免「下载曾经正常、重启后上传初始化失败」。
         await this.login();
       } else {
         throw e;
