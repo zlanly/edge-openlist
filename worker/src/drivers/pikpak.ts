@@ -51,7 +51,11 @@ export class PikPakDriver extends CloudBase {
     this.idCache.set("/", this.rootId);
     this.captchaToken = this.cfgStr("captcha_token") || "";
     const stored = await loadTokens(this.env.KV, this.mountId).catch(() => null);
-    this.refreshTok = this.cfgStr("refresh_token") || stored?.refresh_token || "";
+    const configuredRefreshToken = this.cfgStr("refresh_token");
+    const hasPasswordLogin = Boolean(this.cfgStr("username") && this.cfgStr("password"));
+    // 配置了账号密码时优先走登录，不要被 KV 中遗留的旧 refresh_token 劫持。
+    // 否则用户明明选择了账号密码，挂载仍会拿历史令牌刷新并卡在 permission_denied。
+    this.refreshTok = configuredRefreshToken || (!hasPasswordLogin ? stored?.refresh_token || "" : "");
     try {
       if (this.refreshTok) await this.refreshToken();
       else await this.login();
@@ -337,7 +341,13 @@ async function ossPutStream(endpoint: string, bucket: string, key: string, _ak: 
   // PikPak 返回的是临时 OSS 上传参数。参考 OpenListNext 的已有驱动，
   // 这里只发送长度和 STS token，不再自行拼 OSS V1 Authorization：
   // endpoint/STS 参数已经由 PikPak 生成，额外签名会导致 OSS 返回 403。
-  const url = `https://${bucket}.${endpoint}/${key}`;
+  const normalizedEndpoint = endpoint.trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  // 部分账号返回的 endpoint 已带 bucket 前缀；避免重复拼接成
+  // bucket.bucket.endpoint（该地址会被 Cloudflare 返回 530/1016）。
+  const host = normalizedEndpoint.startsWith(`${bucket}.`)
+    ? normalizedEndpoint
+    : `${bucket}.${normalizedEndpoint}`;
+  const url = `https://${host}/${key}`;
   const headers: Record<string, string> = {
     "Content-Length": String(size),
     "x-oss-security-token": token,

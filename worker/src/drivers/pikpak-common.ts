@@ -47,13 +47,11 @@ export function pikpakAccountMeta(username: string): Record<string, string> {
   return { username: value };
 }
 
-export function pikpakOssEndpoint(endpoint: string, bucket: string, platform: string): string {
-  // OpenListNext 的 Android 客户端固定把 OSS 上传落到 mypikpak.net；
-  // 接口返回的 endpoint 在 Android 上可能是内部域名，直接使用会导致上传失败。
+export function pikpakOssEndpoint(endpoint: string, _bucket: string, platform: string): string {
+  // 沿用 OpenListNext：Android 客户端固定把 OSS 上传落到 mypikpak.net；
+  // 其他平台必须原样使用接口返回的 endpoint，再由调用方拼接 bucket。
   if (platform === "android") return "mypikpak.net";
-  const raw = endpoint.trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
-  // 其他平台返回值有时已经包含 bucket 前缀，避免拼成 bucket.bucket.endpoint。
-  return raw.startsWith(`${bucket}.`) ? raw.slice(bucket.length + 1) : raw;
+  return endpoint.trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
 }
 
 export function pikpakRootId(config: Record<string, unknown>): string {
