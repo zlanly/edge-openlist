@@ -135,6 +135,13 @@ async function startOAuth() {
     touched.value = true;
     return;
   }
+  // 必须在点击事件同步阶段打开窗口，否则浏览器会拦截异步 window.open。
+  const win = window.open("", "_blank");
+  if (!win) {
+    toast.warn("浏览器拦截了新窗口", "请允许弹出窗口后重试");
+    return;
+  }
+  win.document.title = "正在准备授权…";
   saving.value = true;
   try {
     let id = mountId.value;
@@ -151,9 +158,9 @@ async function startOAuth() {
       toast.info("已先创建挂载", "授权完成后回到这里保存其余配置");
     }
     const url = await api.oauthStartUrl(driver.value, id);
-    const win = window.open(url, "_blank", "noopener");
-    if (!win) toast.warn("浏览器拦截了新窗口", "请允许弹出窗口后重试");
+    win.location.href = url;
   } catch (e) {
+    win.close();
     toast.fromError(e, "无法启动授权");
   } finally {
     saving.value = false;

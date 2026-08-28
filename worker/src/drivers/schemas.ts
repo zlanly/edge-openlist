@@ -1910,13 +1910,12 @@ const SCHEMAS: Record<string, DriverSchema> = {
         "key": "username",
         "label": "Username",
         "type": "text",
-        "required": true
+        "required": false
       },
       {
         "key": "password",
         "label": "Password",
-        "type": "password",
-        "required": true
+        "type": "password"
       },
       {
         "key": "captcha_token",
@@ -1927,7 +1926,7 @@ const SCHEMAS: Record<string, DriverSchema> = {
         "key": "refresh_token",
         "label": "Refresh token",
         "type": "password",
-        "required": true
+        "help": "已有令牌时填写；没有令牌则同时填写用户名和密码"
       },
       {
         "key": "disable_media_link",
@@ -1942,9 +1941,22 @@ const SCHEMAS: Record<string, DriverSchema> = {
     "name": "Pikpak share",
     "fields": [
       {
+        "key": "platform",
+        "label": "Platform",
+        "type": "select",
+        "required": true,
+        "default": "web",
+        "options": [
+          { "label": "android", "value": "android" },
+          { "label": "web", "value": "web" },
+          { "label": "pc", "value": "pc" }
+        ]
+      },
+      {
         "key": "share_id",
         "label": "Share id",
-        "type": "text"
+        "type": "text",
+        "required": true
       },
       {
         "key": "share_pwd",

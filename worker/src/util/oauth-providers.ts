@@ -37,11 +37,6 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProvider> = {
     scope: "",
     extraToken: { token_access_type: "offline" },
   },
-  pikpak: {
-    authorize: "https://user.pikpak.com/codec/activity/oauth/v1/authorize",
-    token: "https://user.pikpak.com/codec/activity/oauth/v1/token",
-    scope: "user.info profile",
-  },
   yandex_disk: {
     authorize: "https://oauth.yandex.com/authorize",
     token: "https://oauth.yandex.com/token",

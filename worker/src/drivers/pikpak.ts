@@ -6,65 +6,11 @@
 import type { Driver, DriverConfig, Env, FileItem, UploadSession } from "../types";
 import { basename, joinPath, normalizePath, parentPath } from "./base";
 import { CloudBase } from "./cloud-base";
+import { getPikPakClient, md5 } from "./pikpak-common";
 import { loadTokens, saveTokens, isExpired, type TokenSet } from "../util/tokenstore";
 
 const API_DRIVE = "https://api-drive.mypikpak.net/drive/v1";
 const API_USER = "https://user.mypikpak.net/v1";
-const WEB = { id: "YUMx5nI8ZU8Ap8pm", secret: "dbw2OtmVEeuUvIptb1Coyg", version: "2.0.0", pkg: "mypikpak.com" };
-const WEB_ALGOS = [
-  "C9qPpZLN8ucRTaTiUMWYS9cQvWOE", "+r6CQVxjzJV6LCV", "F", "pFJRC",
-  "9WXYIDGrwTCz2OiVlgZa90qpECPD6olt", "/750aCr4lm/Sly/c", "RB+DT/gZCrbV", "",
-  "CyLsf7hdkIRxRm215hl", "7xHvLi2tOYP0Y92b", "ZGTXXxu8E/MIWaEDB+Sm/", "1UI3",
-  "E7fP5Pfijd+7K+t6Tg/NhuLq0eEUVChpJSkrKxpO", "ihtqpG6FMt65+Xk+tWUH2", "NhXXU9rg4XXdzo7u5o",
-];
-
-const UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36";
-
-// ---- 纯 JS MD5（WebCrypto 无 MD5，用于 captcha_sign / deviceId）----
-// 标准实现（RFC 1321），仅用于 PikPak 短字符串（deviceId / captcha_sign），
-// 输入长度远小于 2^29 字节，bitLen 低/高位拆分安全。
-function md5(s: string): string {
-  const rotl = (n: number, c: number): number => (n << c) | (n >>> (32 - c));
-  const msg = new TextEncoder().encode(s);
-  const len = msg.length;
-  const bitLen = len * 8;
-  const total = (len + 1 + 8 + 63) & ~63; // +0x80 分隔 + 8 字节长度 + 补齐到 64
-  const buf = new Uint8Array(total);
-  buf.set(msg);
-  buf[len] = 0x80;
-  const dv = new DataView(buf.buffer);
-  dv.setUint32(total - 8, bitLen >>> 0, true);
-  dv.setUint32(total - 4, Math.floor(bitLen / 4294967296), true);
-  const K = new Array<number>(64);
-  for (let i = 0; i < 64; i++) K[i] = (Math.abs(Math.sin(i + 1)) * 4294967296) | 0;
-  const S = [
-    [7, 12, 17, 22],
-    [5, 9, 14, 20],
-    [4, 11, 16, 23],
-    [6, 10, 15, 21],
-  ];
-  let [a0, b0, c0, d0] = [0x67452301, -0x10325477 | 0, -0x67452302 | 0, 0x10325476];
-  const x = new Int32Array(16);
-  for (let i = 0; i < total; i += 64) {
-    for (let j = 0; j < 16; j++) x[j] = dv.getInt32(i + j * 4, true);
-    let A = a0, B = b0, C = c0, D = d0;
-    for (let j = 0; j < 64; j++) {
-      let f: number, g: number, s: number;
-      if (j < 16) { f = (B & C) | (~B & D); g = j; s = S[0][j % 4]; }
-      else if (j < 32) { f = (B & D) | (C & ~D); g = (5 * j + 1) % 16; s = S[1][j % 4]; }
-      else if (j < 48) { f = B ^ C ^ D; g = (3 * j + 5) % 16; s = S[2][j % 4]; }
-      else { f = C ^ (B | ~D); g = (7 * j) % 16; s = S[3][j % 4]; }
-      f = (f + A + K[j] + x[g]) | 0;
-      A = D; D = C; C = B;
-      B = (B + rotl(f, s)) | 0;
-    }
-    a0 = (a0 + A) | 0; b0 = (b0 + B) | 0; c0 = (c0 + C) | 0; d0 = (d0 + D) | 0;
-  }
-  const hex = (n: number): string => (n >>> 0).toString(16).padStart(8, "0");
-  return hex(a0) + hex(b0) + hex(c0) + hex(d0);
-}
-
 export class PikPakDriver extends CloudBase {
   readonly id = "pikpak";
   private accessToken = "";
@@ -79,70 +25,110 @@ export class PikPakDriver extends CloudBase {
   private get platform(): string {
     return this.cfgStr("platform") || "web";
   }
+  private get client() {
+    return getPikPakClient(this.platform, this.deviceId, this.userId);
+  }
 
   async init(cfg: DriverConfig): Promise<void> {
     await super.init(cfg);
     this.deviceId = this.cfgStr("device_id") || md5(this.cfgStr("username") + this.cfgStr("password"));
     this.captchaToken = this.cfgStr("captcha_token") || "";
-    this.refreshTok = this.cfgStr("refresh_token") || "";
-    if (!this.refreshTok) throw new Error("pikpak 需要 refresh_token（无 captcha 登录不支持自动）");
-    await this.refreshToken();
-    // 拉取一次 captcha token（若缺失则尝试，失败仅告警）
+    const stored = await loadTokens(this.env.KV, this.mountId).catch(() => null);
+    this.refreshTok = this.cfgStr("refresh_token") || stored?.refresh_token || "";
+    try {
+      if (this.refreshTok) await this.refreshToken();
+      else await this.login();
+    } catch (e: any) {
+      // 令牌过期时，若仍有账号密码，按官方驱动回退到重新登录。
+      if (this.cfgStr("username") && this.cfgStr("password") && /失效|invalid|4126/i.test(String(e?.message || e))) {
+        await this.login();
+      } else {
+        throw e;
+      }
+    }
     try {
       await this.refreshCaptchaToken("GET:/drive/v1/files");
-    } catch (e) {
-      // captcha 需要人工验证时忽略，后续请求可能受限
+    } catch {
+      // 需要人工验证时保留已填写的 token，让后续请求返回可操作的上游错误。
     }
+  }
+
+  private async login(): Promise<void> {
+    const username = this.cfgStr("username");
+    const password = this.cfgStr("password");
+    if (!username || !password) throw new Error("pikpak 需要 refresh_token，或同时填写 username 和 password");
+    if (!this.captchaToken) await this.refreshCaptchaToken("POST:/v1/auth/signin", username);
+    const r = await fetch(`${API_USER}/auth/signin?client_id=${this.client.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        captcha_token: this.captchaToken,
+        client_id: this.client.id,
+        client_secret: this.client.secret,
+        username,
+        password,
+      }),
+    });
+    const j = (await r.json().catch(() => ({}))) as any;
+    if (j.error_code) throw new Error(`pikpak 登录失败: ${j.error || j.error_description}`);
+    this.accessToken = j.access_token || "";
+    this.refreshTok = j.refresh_token || "";
+    this.userId = j.sub || this.userId;
+    if (!this.refreshTok) throw new Error("pikpak 登录未返回 refresh_token");
+    await saveTokens(this.env.KV, this.mountId, {
+      access_token: this.accessToken,
+      refresh_token: this.refreshTok,
+      expires_at: Date.now() + (Number(j.expires_in) || 3600) * 1000,
+      extra: j,
+    });
   }
 
   private async refreshToken(): Promise<void> {
     const body = {
-      client_id: WEB.id,
-      client_secret: WEB.secret,
+      client_id: this.client.id,
+      client_secret: this.client.secret,
       grant_type: "refresh_token",
       refresh_token: this.refreshTok,
     };
-    const r = await fetch(`${API_USER}/auth/token?client_id=${WEB.id}`, {
+    const r = await fetch(`${API_USER}/auth/token?client_id=${this.client.id}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    const j = (await r.json()) as any;
+    const j = (await r.json().catch(() => ({}))) as any;
     if (j.error_code) {
-      if (j.error_code === 4126 && this.cfgStr("username")) {
-        throw new Error("pikpak refresh_token 失效，请重新获取");
-      }
+      if (j.error_code === 4126) throw new Error("pikpak refresh_token 失效，请重新获取");
       throw new Error(`pikpak 令牌刷新失败: ${j.error || j.error_description}`);
     }
-    this.accessToken = j.access_token;
+    this.accessToken = j.access_token || "";
     this.refreshTok = j.refresh_token || this.refreshTok;
     this.userId = j.sub || this.userId;
     await saveTokens(this.env.KV, this.mountId, {
       access_token: this.accessToken,
       refresh_token: this.refreshTok,
-      expires_at: Date.now() + 3600 * 1000,
+      expires_at: Date.now() + (Number(j.expires_in) || 3600) * 1000,
       extra: j,
     });
   }
 
   private async getCaptchaSign(): Promise<[string, string]> {
     const ts = String(Date.now());
-    let str = WEB.id + WEB.version + WEB.pkg + this.deviceId + ts;
-    for (const algo of WEB_ALGOS) str = md5(str + algo);
+    let str = this.client.id + this.client.version + this.client.pkg + this.deviceId + ts;
+    for (const algo of this.client.algorithms) str = md5(str + algo);
     return [ts, "1." + str];
   }
 
-  private async refreshCaptchaToken(action: string): Promise<void> {
+  private async refreshCaptchaToken(action: string, userIdForCaptcha = ""): Promise<void> {
     const [ts, sign] = await this.getCaptchaSign();
     const body = {
       action,
       captcha_token: this.captchaToken,
-      client_id: WEB.id,
+      client_id: this.client.id,
       device_id: this.deviceId,
-      meta: { client_version: WEB.version, package_name: WEB.pkg, user_id: this.userId, timestamp: ts, captcha_sign: sign },
+      meta: { client_version: this.client.version, package_name: this.client.pkg, user_id: this.userId, username: action.includes("signin") ? userIdForCaptcha : undefined, timestamp: ts, captcha_sign: sign },
       redirect_uri: "xlaccsdk01://xbase.cloud/callback?state=harbor",
     };
-    const r = await fetch(`${API_USER}/shield/captcha/init?client_id=${WEB.id}`, {
+    const r = await fetch(`${API_USER}/shield/captcha/init?client_id=${this.client.id}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -155,7 +141,7 @@ export class PikPakDriver extends CloudBase {
 
   protected async hdrs(): Promise<Record<string, string>> {
     const h: Record<string, string> = {
-      "User-Agent": UA,
+      "User-Agent": this.client.userAgent,
       "X-Device-ID": this.deviceId,
       "X-Captcha-Token": this.captchaToken,
     };

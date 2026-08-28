@@ -17,6 +17,8 @@ import { AzureBlobDriver } from "../worker/src/drivers/azure_blob";
 import { VirtualDriver } from "../worker/src/drivers/virtual";
 import { UrlTreeDriver } from "../worker/src/drivers/url_tree";
 import { PikPakDriver } from "../worker/src/drivers/pikpak";
+import { PikPakShareDriver } from "../worker/src/drivers/pikpak_share";
+import { md5 } from "../worker/src/drivers/pikpak-common";
 import { Pan123Driver } from "../worker/src/drivers/123";
 import { TeraboxDriver } from "../worker/src/drivers/terabox";
 
@@ -34,6 +36,7 @@ const kv = new KVMock();
 const env: any = { KV: kv, R2: {}, DB: {}, ASSETS: {}, JWT_SECRET: "x", APP_TITLE: "t" };
 
 const requests: string[] = [];
+const pikpakBodies: any[] = [];
 const tbChunkMd5 = _ch("md5").update("hello-terabox").digest("hex");
 const authLog: string[] = []; // ��¼ Authorization ͷ�����ڶ���ǩ��/Bearer
 function json(body: any, status = 200) {
@@ -156,14 +159,23 @@ function json(body: any, status = 200) {
     );
   }
 
-  // PikPak��token ˢ�� + captcha + �б�
+  // PikPak：token、captcha、个人盘和分享盘
+  if (u.includes("user.mypikpak.net/v1/shield/captcha/init") || u.includes("user.mypikpak.net/v1/auth/signin") || u.includes("user.mypikpak.net/v1/auth/token")) {
+    if (opts.body) pikpakBodies.push(typeof opts.body === "string" ? JSON.parse(opts.body) : opts.body);
+  }
   if (u.includes("user.mypikpak.net/v1/auth/token")) return json({ access_token: "pk-token", refresh_token: "pk-refresh", sub: "pk-uid" });
+  if (u.includes("user.mypikpak.net/v1/auth/signin")) return json({ access_token: "pk-login-token", refresh_token: "pk-login-refresh", sub: "pk-uid" });
   if (u.includes("user.mypikpak.net/v1/shield/captcha/init")) return json({ captcha_token: "pk-captcha" });
+  if (u.includes("api-drive.mypikpak.net/drive/v1/share?") && u.includes("share_id=share1")) return json({ pass_code_token: "pk-pass" });
+  if (u.includes("api-drive.mypikpak.net/drive/v1/share/detail")) return json({ share_status: "OK", files: [
+    { name: "shared.mp4", kind: "drive#file", size: "55", id: "sf1", modified_time: "2024-01-01T00:00:00Z" },
+    { name: "shared-dir", kind: "drive#folder", id: "sd1" },
+  ], next_page_token: "" });
+  if (u.includes("api-drive.mypikpak.net/drive/v1/share/file_info")) return json({ file_info: { web_content_link: "https://dl/pikpak-share" } });
   if (u.includes("api-drive.mypikpak.net/drive/v1/files")) return json({ files: [
     { name: "movie.mp4", kind: "drive#file", size: "55", id: "f1", modified_time: "2024-01-01T00:00:00Z" },
     { name: "folderA", kind: "drive#folder", id: "d1" },
   ], next_page_token: "" });
-
   // 123 ���̣���¼ + �б�
   if (u.includes("login.123pan.com/api/user/sign_in")) return json({ code: 200, data: { token: "t123" } });
   if (u.includes("yun.123pan.com/b/api/file/list/new")) return json({ code: 0, data: {
@@ -436,6 +448,29 @@ async function main() {
   });
 
   // 123 ���̣���¼ + �б����� + ����д�� KV
+  await test("PikPak MD5 使用标准小端摘要", async () => {
+    assert.equal(md5(""), "d41d8cd98f00b204e9800998ecf8427e");
+    assert.equal(md5("abc"), "900150983cd24fb0d6963f7d28e17f72");
+  });
+
+  await test("PikPak share 按 platform 生成 captcha 并解析分享目录", async () => {
+    const d = await mk(PikPakShareDriver, { share_id: "share1", platform: "android" }, 71);
+    const items = await d.list("/");
+    assert.equal(items.length, 2);
+    assert.equal(items[0].name, "shared.mp4");
+    assert.equal(items[1].is_dir, true);
+    assert.ok(requests.some((r) => r.includes("share/detail")), "应请求分享目录");
+  });
+
+  await test("PikPak 无 refresh_token 时可用账号密码登录", async () => {
+    pikpakBodies.length = 0;
+    const d = await mk(PikPakDriver, { platform: "pc", username: "user", password: "pass" }, 72);
+    await d.list("/");
+    assert.ok(requests.some((r) => r.includes("/v1/auth/signin?client_id=YvtoWO6GNHiuCl7x")), "应使用 pc client id 登录");
+    assert.ok(pikpakBodies.some((b) => b.client_id === "YvtoWO6GNHiuCl7x" && b.client_secret), "登录应携带对应客户端凭据");
+    assert.ok(kv.store.has("tok:72"), "登录令牌应写入 KV");
+  });
+
   await test("123 ���� ��¼ + �б�������Type �ж�Ŀ¼��+ ����д�� KV", async () => {
     const d = await mk(Pan123Driver, { username: "u", password: "p" }, 8);
     const items = await d.list("/");
