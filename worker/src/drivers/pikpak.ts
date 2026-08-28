@@ -6,7 +6,17 @@
 import type { Driver, DriverConfig, Env, FileItem, UploadSession } from "../types";
 import { basename, joinPath, normalizePath, parentPath } from "./base";
 import { CloudBase } from "./cloud-base";
-import { getPikPakClient, md5 } from "./pikpak-common";
+import {
+  getPikPakClient,
+  isPikPakCaptchaCode,
+  isPikPakRetryableAuthCode,
+  md5,
+  parsePikPakResponse,
+  pikpakAccountMeta,
+  pikpakClientHeaders,
+  pikpakOssEndpoint,
+  pikpakRootId,
+} from "./pikpak-common";
 import { loadTokens, saveTokens, isExpired, type TokenSet } from "../util/tokenstore";
 
 const API_DRIVE = "https://api-drive.mypikpak.net/drive/v1";
@@ -18,6 +28,9 @@ export class PikPakDriver extends CloudBase {
   private captchaToken = "";
   private deviceId = "";
   private userId = "";
+  private rootId = "root";
+  private readonly idCache = new Map<string, string>();
+  private readonly itemCache = new Map<string, FileItem>();
 
   private cfgStr(k: string): string {
     return (this.cfg as Record<string, unknown>)[k] as string;
@@ -32,6 +45,10 @@ export class PikPakDriver extends CloudBase {
   async init(cfg: DriverConfig): Promise<void> {
     await super.init(cfg);
     this.deviceId = this.cfgStr("device_id") || md5(this.cfgStr("username") + this.cfgStr("password"));
+    this.rootId = pikpakRootId(this.cfg as Record<string, unknown>);
+    this.idCache.clear();
+    this.itemCache.clear();
+    this.idCache.set("/", this.rootId);
     this.captchaToken = this.cfgStr("captcha_token") || "";
     const stored = await loadTokens(this.env.KV, this.mountId).catch(() => null);
     this.refreshTok = this.cfgStr("refresh_token") || stored?.refresh_token || "";
@@ -60,16 +77,16 @@ export class PikPakDriver extends CloudBase {
     if (!this.captchaToken) await this.refreshCaptchaToken("POST:/v1/auth/signin", username);
     const r = await fetch(`${API_USER}/auth/signin?client_id=${this.client.id}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: pikpakClientHeaders(this.client, this.deviceId, this.captchaToken),
       body: JSON.stringify({
         captcha_token: this.captchaToken,
         client_id: this.client.id,
         client_secret: this.client.secret,
-        username,
+        ...pikpakAccountMeta(username),
         password,
       }),
     });
-    const j = (await r.json().catch(() => ({}))) as any;
+    const j = await parsePikPakResponse<any>(r, "登录", true);
     if (j.error_code) throw new Error(`pikpak 登录失败: ${j.error || j.error_description}`);
     this.accessToken = j.access_token || "";
     this.refreshTok = j.refresh_token || "";
@@ -92,10 +109,10 @@ export class PikPakDriver extends CloudBase {
     };
     const r = await fetch(`${API_USER}/auth/token?client_id=${this.client.id}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: pikpakClientHeaders(this.client, this.deviceId, this.captchaToken),
       body: JSON.stringify(body),
     });
-    const j = (await r.json().catch(() => ({}))) as any;
+    const j = await parsePikPakResponse<any>(r, "刷新令牌", true);
     if (j.error_code) {
       if (j.error_code === 4126) throw new Error("pikpak refresh_token 失效，请重新获取");
       throw new Error(`pikpak 令牌刷新失败: ${j.error || j.error_description}`);
@@ -128,12 +145,12 @@ export class PikPakDriver extends CloudBase {
       meta: { client_version: this.client.version, package_name: this.client.pkg, user_id: this.userId, username: action.includes("signin") ? userIdForCaptcha : undefined, timestamp: ts, captcha_sign: sign },
       redirect_uri: "xlaccsdk01://xbase.cloud/callback?state=harbor",
     };
-    const r = await fetch(`${API_USER}/shield/captcha/init?client_id=${this.client.id}`, {
+    const r = await fetch(`${API_USER}/shield/captcha/init`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: pikpakClientHeaders(this.client, this.deviceId, this.captchaToken),
       body: JSON.stringify(body),
     });
-    const j = (await r.json()) as any;
+    const j = await parsePikPakResponse<any>(r, "验证码", true);
     if (j.error_code) throw new Error(`pikpak captcha: ${j.error || j.error_description}`);
     if (j.url) throw new Error(`pikpak 需要人机验证: ${j.url}`);
     this.captchaToken = j.captcha_token;
@@ -154,16 +171,16 @@ export class PikPakDriver extends CloudBase {
     if (query) for (const [k, v] of Object.entries(query)) u.searchParams.set(k, v);
     const r = await fetch(u.toString(), {
       method,
-      headers: await this.hdrs(),
+      headers: { ...(await this.hdrs()), ...(body ? { "Content-Type": "application/json" } : {}) },
       body: body ? JSON.stringify(body) : undefined,
     });
-    const j = (await r.json().catch(() => ({}))) as any;
+    const j = await parsePikPakResponse<any>(r, `${method} ${u.pathname}`, true);
     if (j.error_code) {
-      if (retry && [4122, 4121, 16].includes(j.error_code)) {
+      if (retry && isPikPakRetryableAuthCode(j.error_code)) {
         await this.refreshToken();
         return this.request<T>(url, method, body, query, false);
       }
-      if (retry && j.error_code === 9) {
+      if (retry && isPikPakCaptchaCode(j.error_code)) {
         await this.refreshCaptchaToken(method + ":" + new URL(url).pathname);
         return this.request<T>(url, method, body, query, false);
       }
@@ -173,7 +190,7 @@ export class PikPakDriver extends CloudBase {
   }
 
   async list(path: string): Promise<FileItem[]> {
-    const id = path === "/" ? "root" : (await this.getIdByPath(path));
+    const id = await this.getIdByPath(path);
     const out: FileItem[] = [];
     let page = "first";
     for (;;) {
@@ -187,14 +204,18 @@ export class PikPakDriver extends CloudBase {
         page_token: page,
       });
       for (const f of j.files || []) {
-        out.push({
+        const itemPath = joinPath(path, f.name);
+        const item: FileItem = {
           name: f.name,
-          path: joinPath(path, f.name),
+          path: itemPath,
           is_dir: f.kind === "drive#folder",
           size: Number(f.size || 0),
           modified: f.modified_time ? Date.parse(f.modified_time) : 0,
           etag: f.id,
-        });
+        };
+        if (f.id) this.idCache.set(normalizePath(itemPath), f.id);
+        this.itemCache.set(normalizePath(itemPath), item);
+        out.push(item);
       }
       page = j.next_page_token || "";
       if (!page) break;
@@ -203,18 +224,24 @@ export class PikPakDriver extends CloudBase {
   }
 
   private async getIdByPath(path: string): Promise<string> {
-    if (path === "/") return "root";
-    const parent = parentPath(path);
+    const normalized = normalizePath(path);
+    const cached = this.idCache.get(normalized);
+    if (cached) return cached;
+    const parent = parentPath(normalized);
     const items = await this.list(parent);
-    const it = items.find((i) => i.path === path);
-    if (!it) throw new Error("not found: " + path);
-    return it.etag || "";
+    const it = items.find((i) => normalizePath(i.path) === normalized);
+    if (!it?.etag) throw new Error("not found: " + normalized);
+    this.idCache.set(normalized, it.etag);
+    return it.etag;
   }
 
   async get(path: string): Promise<FileItem> {
-    const items = await this.list(parentPath(path));
-    const it = items.find((i) => i.path === path);
-    if (!it) throw new Error("not found: " + path);
+    const normalized = normalizePath(path);
+    const cached = this.itemCache.get(normalized);
+    if (cached) return cached;
+    const items = await this.list(parentPath(normalized));
+    const it = items.find((i) => normalizePath(i.path) === normalized);
+    if (!it) throw new Error("not found: " + normalized);
     return it;
   }
 
@@ -256,7 +283,16 @@ export class PikPakDriver extends CloudBase {
     });
     if (!task.resumable) return; // 秒传命中
     const p = task.resumable.params;
-    await ossPutStream(p.endpoint, p.bucket, p.key, p.access_key_id, p.access_key_secret, p.security_token, buf, buf.length);
+    await ossPutStream(
+      pikpakOssEndpoint(p.endpoint, p.bucket, this.platform),
+      p.bucket,
+      p.key,
+      p.access_key_id,
+      p.access_key_secret,
+      p.security_token,
+      buf,
+      buf.length,
+    );
   }
 
   async mkdir(path: string): Promise<void> {

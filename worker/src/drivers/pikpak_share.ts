@@ -1,9 +1,16 @@
 // PikPak 分享（只读）。端点移植自 OpenList drivers/pikpak_share/*。
 // captcha_sign 依赖 MD5（WebCrypto 无），内联纯 JS MD5。
 import type { Driver, DriverConfig, Env, FileItem, UploadSession } from "../types";
-import { basename, joinPath, parentPath } from "./base";
+import { basename, joinPath, normalizePath, parentPath } from "./base";
 import { CloudBase } from "./cloud-base";
-import { getPikPakClient, md5 } from "./pikpak-common";
+import {
+  getPikPakClient,
+  isPikPakCaptchaCode,
+  md5,
+  parsePikPakResponse,
+  pikpakClientHeaders,
+  pikpakRootId,
+} from "./pikpak-common";
 
 const API_DRIVE = "https://api-drive.mypikpak.net/drive/v1";
 const API_USER = "https://user.mypikpak.net/v1";
@@ -15,6 +22,9 @@ export class PikPakShareDriver extends CloudBase {
   private captchaToken = "";
   private deviceId = "";
   private useTrans = false;
+  private rootId = "root";
+  private readonly idCache = new Map<string, string>();
+  private readonly itemCache = new Map<string, FileItem>();
 
   private cfgStr(k: string): string {
     return (this.cfg as Record<string, unknown>)[k] as string;
@@ -31,6 +41,10 @@ export class PikPakShareDriver extends CloudBase {
     this.shareId = this.cfgStr("share_id").trim();
     if (!this.shareId) throw new Error("pikpak_share 需要 share_id");
     this.sharePwd = this.cfgStr("share_pwd") || "";
+    this.rootId = pikpakRootId(this.cfg as Record<string, unknown>);
+    this.idCache.clear();
+    this.itemCache.clear();
+    this.idCache.set("/", this.rootId);
     this.useTrans = this.cfgStr("use_transcoding_address") === "true";
     this.deviceId = this.cfgStr("device_id") || md5(this.shareId + this.sharePwd + String(Date.now()));
     this.captchaToken = this.cfgStr("captcha_token") || "";
@@ -57,10 +71,10 @@ export class PikPakShareDriver extends CloudBase {
     };
     const r = await fetch(`${API_USER}/shield/captcha/init`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: pikpakClientHeaders(this.client, this.deviceId, this.captchaToken),
       body: JSON.stringify(body),
     });
-    const j = (await r.json()) as any;
+    const j = await parsePikPakResponse<any>(r, "分享验证码", true);
     if (j.error_code) throw new Error(`pikpak_share captcha: ${j.error || j.error_description}`);
     if (j.url) throw new Error(`pikpak_share 需要人机验证: ${j.url}`);
     this.captchaToken = j.captcha_token;
@@ -83,9 +97,9 @@ export class PikPakShareDriver extends CloudBase {
     const u = new URL(url);
     if (query) for (const [k, v] of Object.entries(query)) u.searchParams.set(k, v);
     const r = await fetch(u.toString(), { method: "GET", headers: await this.hdrs() });
-    const j = (await r.json().catch(() => ({}))) as any;
+    const j = await parsePikPakResponse<any>(r, `GET ${u.pathname}`, true);
     if (j.error_code) {
-      if (retry && j.error_code === 9) {
+      if (retry && isPikPakCaptchaCode(j.error_code)) {
         await this.refreshCaptchaToken(this.requestAction(url), "");
         return this.request<T>(url, query, false);
       }
@@ -106,16 +120,19 @@ export class PikPakShareDriver extends CloudBase {
   }
 
   private async getIdByPath(path: string): Promise<string> {
-    if (path === "/") return "root";
-    const parent = parentPath(path);
+    const normalized = normalizePath(path);
+    const cached = this.idCache.get(normalized);
+    if (cached) return cached;
+    const parent = parentPath(normalized);
     const items = await this.list(parent);
-    const it = items.find((i) => i.path === path);
-    if (!it) throw new Error("not found: " + path);
-    return it.etag || "";
+    const it = items.find((i) => normalizePath(i.path) === normalized);
+    if (!it?.etag) throw new Error("not found: " + normalized);
+    this.idCache.set(normalized, it.etag);
+    return it.etag;
   }
 
   async list(path: string): Promise<FileItem[]> {
-    const id = path === "/" ? "root" : await this.getIdByPath(path);
+    const id = await this.getIdByPath(path);
     const out: FileItem[] = [];
     let page = "first";
     for (;;) {
@@ -139,14 +156,18 @@ export class PikPakShareDriver extends CloudBase {
         throw new Error(`pikpak_share: ${j.share_status_text}`);
       }
       for (const f of j.files || []) {
-        out.push({
+        const itemPath = joinPath(path, f.name);
+        const item: FileItem = {
           name: f.name,
-          path: joinPath(path, f.name),
+          path: itemPath,
           is_dir: f.kind === "drive#folder",
           size: Number(f.size || 0),
           modified: f.modified_time ? Date.parse(f.modified_time) : 0,
           etag: f.id,
-        });
+        };
+        if (f.id) this.idCache.set(normalizePath(itemPath), f.id);
+        this.itemCache.set(normalizePath(itemPath), item);
+        out.push(item);
       }
       page = j.next_page_token || "";
       if (!page) break;
@@ -155,9 +176,12 @@ export class PikPakShareDriver extends CloudBase {
   }
 
   async get(path: string): Promise<FileItem> {
-    const items = await this.list(parentPath(path));
-    const it = items.find((i) => i.path === path);
-    if (!it) throw new Error("not found: " + path);
+    const normalized = normalizePath(path);
+    const cached = this.itemCache.get(normalized);
+    if (cached) return cached;
+    const items = await this.list(parentPath(normalized));
+    const it = items.find((i) => normalizePath(i.path) === normalized);
+    if (!it) throw new Error("not found: " + normalized);
     return it;
   }
 

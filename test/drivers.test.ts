@@ -18,7 +18,7 @@ import { VirtualDriver } from "../worker/src/drivers/virtual";
 import { UrlTreeDriver } from "../worker/src/drivers/url_tree";
 import { PikPakDriver } from "../worker/src/drivers/pikpak";
 import { PikPakShareDriver } from "../worker/src/drivers/pikpak_share";
-import { md5 } from "../worker/src/drivers/pikpak-common";
+import { md5, parsePikPakResponse } from "../worker/src/drivers/pikpak-common";
 import { Pan123Driver } from "../worker/src/drivers/123";
 import { TeraboxDriver } from "../worker/src/drivers/terabox";
 
@@ -451,6 +451,24 @@ async function main() {
   await test("PikPak MD5 使用标准小端摘要", async () => {
     assert.equal(md5(""), "d41d8cd98f00b204e9800998ecf8427e");
     assert.equal(md5("abc"), "900150983cd24fb0d6963f7d28e17f72");
+  });
+
+  await test("PikPak 非 JSON 错误不会被当成空成功", async () => {
+    await assert.rejects(
+      () => parsePikPakResponse<any>(new Response("<html>blocked</html>", { status: 403 }), "列表"),
+      /非 JSON.*403/,
+    );
+  });
+
+  await test("PikPak root_folder_id 作为个人盘根目录并缓存文件 ID", async () => {
+    const d = await mk(PikPakDriver, { refresh_token: "rt", root_folder_id: "d1" }, 73);
+    const items = await d.list("/");
+    assert.equal(items[0].path, "/movie.mp4");
+    assert.ok(requests.some((r) => r.includes("parent_id=d1")), "应使用配置的根目录 ID");
+    const before = requests.filter((r) => r.includes("/drive/v1/files")).length;
+    await d.get("/movie.mp4");
+    const after = requests.filter((r) => r.includes("/drive/v1/files")).length;
+    assert.equal(after, before, "已列出的文件应命中路径 ID 缓存");
   });
 
   await test("PikPak share 按 platform 生成 captcha 并解析分享目录", async () => {

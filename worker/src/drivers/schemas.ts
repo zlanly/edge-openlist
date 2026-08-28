@@ -1907,6 +1907,12 @@ const SCHEMAS: Record<string, DriverSchema> = {
         "type": "text"
       },
       {
+        "key": "root_folder_id",
+        "label": "Root folder id",
+        "type": "text",
+        "help": "可选：从指定目录 ID 作为挂载根目录"
+      },
+      {
         "key": "username",
         "label": "Username",
         "type": "text",
@@ -1962,6 +1968,12 @@ const SCHEMAS: Record<string, DriverSchema> = {
         "key": "share_pwd",
         "label": "Share pwd",
         "type": "password"
+      },
+      {
+        "key": "root_folder_id",
+        "label": "Root folder id",
+        "type": "text",
+        "help": "可选：从指定分享目录 ID 作为挂载根目录"
       },
       {
         "key": "use_transcoding_address",

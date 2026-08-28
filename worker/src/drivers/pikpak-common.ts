@@ -10,6 +10,61 @@ export interface PikPakClient {
   userAgent: string;
 }
 
+/** 先读取原文再解析，避免上游返回 HTML 时被误判为空成功。 */
+export async function parsePikPakResponse<T>(response: Response, action: string, allowStructuredError = false): Promise<T> {
+  const text = await response.text();
+  let value: any;
+  try {
+    value = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`pikpak ${action} 返回非 JSON（HTTP ${response.status}）：${text.slice(0, 240)}`);
+  }
+  // 保留带 error_code 的 JSON 错误给上层处理（例如验证码失效后刷新令牌并重试）。
+  // 没有结构化错误信息的非 2xx 响应不能被当成成功结果。
+  if (!response.ok && !allowStructuredError) {
+    const detail = value?.error || value?.error_description || value?.message || text.slice(0, 240) || "空响应";
+    throw new Error(`pikpak ${action} HTTP ${response.status}：${detail}`);
+  }
+  return value as T;
+}
+
+export function pikpakClientHeaders(client: PikPakClient, deviceId: string, captchaToken = ""): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "User-Agent": client.userAgent,
+    "X-Client-ID": client.id,
+    "X-Device-ID": deviceId,
+  };
+  if (captchaToken) headers["X-Captcha-Token"] = captchaToken;
+  return headers;
+}
+
+export function pikpakAccountMeta(username: string): Record<string, string> {
+  const value = username.trim();
+  if (!value) return {};
+  if (/^[^@\s]+@[^@\s]+$/.test(value)) return { email: value, username: value };
+  if (/^\+?[0-9][0-9\s-]{5,}$/.test(value)) return { phone_number: value, username: value };
+  return { username: value };
+}
+
+export function pikpakOssEndpoint(endpoint: string, bucket: string, _platform: string): string {
+  const raw = endpoint.trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  // Android 返回值有时已经包含 bucket 前缀，避免拼成 bucket.bucket.endpoint。
+  return raw.startsWith(`${bucket}.`) ? raw.slice(bucket.length + 1) : raw;
+}
+
+export function pikpakRootId(config: Record<string, unknown>): string {
+  return String(config.root_folder_id || "root").trim() || "root";
+}
+
+export function isPikPakRetryableAuthCode(code: unknown): boolean {
+  return [4121, 4122, 16].includes(Number(code));
+}
+
+export function isPikPakCaptchaCode(code: unknown): boolean {
+  return Number(code) === 9;
+}
+
 const ANDROID_ALGORITHMS = [
   "SOP04dGzk0TNO7t7t9ekDbAmx+eq0OI1ovEx",
   "nVBjhYiND4hZ2NCGyV5beamIr7k6ifAsAbl",
