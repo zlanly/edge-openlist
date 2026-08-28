@@ -442,22 +442,30 @@ export class TeraboxDriver extends CloudBase {
     const parent = parentPath(path);
     const name = basename(path);
 
+    // TeraBox 的 precreate 必须收到本次文件每个分片的真实 MD5，不能使用固定占位值。
+    // 因为 MD5 列表在 precreate 之前就要提交，Worker 只能先暂存分片；之后逐片上传，
+    // 避免中文文件名或任意内容在 precreate 阶段被上游直接判为非法。
+    const chunkSize = size > 0 ? calculateChunkSize(size) : INITIAL_CHUNK;
+    const chunks = await readChunks(body, chunkSize);
+    const uploadBlockList = chunks.map((bytes) => md5Hex(bytes));
+    const actualSize = chunks.reduce((total, bytes) => total + bytes.length, 0);
+    if (size > 0 && actualSize !== size) {
+      throw new Error(`terabox: 上传大小不一致（声明 ${size}，实际 ${actualSize}）`);
+    }
+
     // 1) locateupload（独立域名，无需 Cookie）
     const locResp = await fetch(`https://${this.urlDomainPrefix}-data.terabox.com/rest/2.0/pcs/file?method=locateupload`);
+    if (!locResp.ok) throw new Error(`terabox: locateupload 失败（HTTP ${locResp.status}）`);
     const locJson = (await locResp.json()) as any;
     const host = locJson.host;
     if (!host) throw new Error("terabox: locateupload 未返回 host");
 
-    // 2) precreate
-    const blockList =
-      size > INITIAL_CHUNK
-        ? '["5910a591dd8fc18c32a8f3df4fdc1761","a5fc157d78e6ad1c7e114b056c92821e"]'
-        : '["5910a591dd8fc18c32a8f3df4fdc1761"]';
+    // 2) precreate：提交真实分片 MD5 列表
     const preData = new URLSearchParams({
       path,
       autoinit: "1",
       target_path: parent,
-      block_list: blockList,
+      block_list: JSON.stringify(uploadBlockList),
       local_mtime: String(Math.floor(Date.now() / 1000)),
       file_limit_switch_v34: "true",
     });
@@ -465,18 +473,11 @@ export class TeraboxDriver extends CloudBase {
     if (pre.errno !== 0) throw new Error(`terabox: precreate 失败 errno ${pre.errno}`);
     if (pre.return_type === 2) return; // 秒传命中
 
-    // 3) 分片上传（流式读取，仅缓冲单个分片用于计算 MD5）
-    const streamSize = size > 0 ? size : 0;
-    const chunkSize = streamSize > 0 ? calculateChunkSize(streamSize) : INITIAL_CHUNK;
-    const reader = new ByteReader(body);
-    const uploadBlockList: string[] = [];
+    // 3) 分片上传。每次只构造当前分片的 multipart 请求，避免再次拼接整文件。
     const superUrl = `https://${host}/rest/2.0/pcs/superfile2`;
-    let partseq = 0;
-    for (;;) {
-      const bytes = await reader.readExactly(chunkSize);
-      if (!bytes || bytes.length === 0) break;
-      const localMD5 = md5Hex(bytes);
-      uploadBlockList.push(localMD5);
+    for (let partseq = 0; partseq < chunks.length; partseq++) {
+      const bytes = chunks[partseq];
+      const localMD5 = uploadBlockList[partseq];
       const params = {
         method: "upload",
         path: encodeURIComponentGo(path),
@@ -493,14 +494,12 @@ export class TeraboxDriver extends CloudBase {
         }
       }
       if (!ok) throw new Error(`terabox: 分片 ${partseq} MD5 校验失败`);
-      partseq++;
     }
-    reader.cancel();
 
     // 4) create 完成提交
     const createData = new URLSearchParams({
       path,
-      size: String(size),
+      size: String(actualSize),
       uploadid: pre.uploadid,
       target_path: parent,
       block_list: JSON.stringify(uploadBlockList),
@@ -531,6 +530,18 @@ function calculateChunkSize(streamSize: number): number {
     threshold <<= 1;
   }
   return chunkSize;
+}
+
+async function readChunks(stream: ReadableStream, chunkSize: number): Promise<Uint8Array[]> {
+  const reader = new ByteReader(stream);
+  const chunks: Uint8Array[] = [];
+  for (;;) {
+    const chunk = await reader.readExactly(chunkSize);
+    if (!chunk || chunk.length === 0) break;
+    chunks.push(new Uint8Array(chunk));
+  }
+  reader.cancel();
+  return chunks;
 }
 
 // 从 ReadableStream 精确读取 n 字节（保留剩余在内部缓冲）

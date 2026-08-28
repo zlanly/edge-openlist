@@ -54,11 +54,14 @@ export function pikpakOssEndpoint(endpoint: string, bucket: string, _platform: s
 }
 
 export function pikpakRootId(config: Record<string, unknown>): string {
-  return String(config.root_folder_id || "root").trim() || "root";
+  // PikPak API 用空 parent_id 表示账号根目录；"root" 不是通用的真实目录 ID，
+  // 直接传它会在真实账号上返回 invalid_argument。
+  return String(config.root_folder_id || "").trim();
 }
 
 export function isPikPakRetryableAuthCode(code: unknown): boolean {
-  return [4121, 4122, 16].includes(Number(code));
+  // 10 是 access token 失效，和 4121/4122/16 一样应刷新令牌后重试。
+  return [10, 4121, 4122, 16].includes(Number(code));
 }
 
 export function isPikPakCaptchaCode(code: unknown): boolean {

@@ -28,7 +28,7 @@ export class PikPakDriver extends CloudBase {
   private captchaToken = "";
   private deviceId = "";
   private userId = "";
-  private rootId = "root";
+  private rootId = "";
   private readonly idCache = new Map<string, string>();
   private readonly itemCache = new Map<string, FileItem>();
 
@@ -75,9 +75,12 @@ export class PikPakDriver extends CloudBase {
     const password = this.cfgStr("password");
     if (!username || !password) throw new Error("pikpak 需要 refresh_token，或同时填写 username 和 password");
     if (!this.captchaToken) await this.refreshCaptchaToken("POST:/v1/auth/signin", username);
-    const r = await fetch(`${API_USER}/auth/signin?client_id=${this.client.id}`, {
+    const r = await fetch(`${API_USER}/auth/signin?client_id=${encodeURIComponent(this.client.id)}`, {
       method: "POST",
-      headers: pikpakClientHeaders(this.client, this.deviceId, this.captchaToken),
+      headers: {
+        ...pikpakClientHeaders(this.client, this.deviceId, this.captchaToken),
+        Accept: "application/json",
+      },
       body: JSON.stringify({
         captcha_token: this.captchaToken,
         client_id: this.client.id,
@@ -195,14 +198,17 @@ export class PikPakDriver extends CloudBase {
     let page = "first";
     for (;;) {
       if (page === "first") page = "";
-      const j = await this.request<any>(`${API_DRIVE}/files`, "GET", undefined, {
-        parent_id: id,
+      const query: Record<string, string> = {
         thumbnail_size: "SIZE_LARGE",
         with_audit: "true",
         limit: "100",
         filters: `{"phase":{"eq":"PHASE_TYPE_COMPLETE"},"trashed":{"eq":false}}`,
         page_token: page,
-      });
+      };
+      // 个人盘根目录由空 parent_id 表示；发送字面量 "root" 会被真实 API 判为 invalid_argument。
+      // 保留空字段本身，和官方接口请求格式一致。
+      query.parent_id = id;
+      const j = await this.request<any>(`${API_DRIVE}/files`, "GET", undefined, query);
       for (const f of j.files || []) {
         const itemPath = joinPath(path, f.name);
         const item: FileItem = {
@@ -225,8 +231,7 @@ export class PikPakDriver extends CloudBase {
 
   private async getIdByPath(path: string): Promise<string> {
     const normalized = normalizePath(path);
-    const cached = this.idCache.get(normalized);
-    if (cached) return cached;
+    if (this.idCache.has(normalized)) return this.idCache.get(normalized) || "";
     const parent = parentPath(normalized);
     const items = await this.list(parent);
     const it = items.find((i) => normalizePath(i.path) === normalized);

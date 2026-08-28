@@ -22,7 +22,7 @@ export class PikPakShareDriver extends CloudBase {
   private captchaToken = "";
   private deviceId = "";
   private useTrans = false;
-  private rootId = "root";
+  private rootId = "";
   private readonly idCache = new Map<string, string>();
   private readonly itemCache = new Map<string, FileItem>();
 
@@ -121,8 +121,9 @@ export class PikPakShareDriver extends CloudBase {
 
   private async getIdByPath(path: string): Promise<string> {
     const normalized = normalizePath(path);
-    const cached = this.idCache.get(normalized);
-    if (cached) return cached;
+    // 空字符串是 PikPak 分享根目录的合法 ID，不能用 truthy 判断缓存命中，
+    // 否则根目录会在 getIdByPath 与 list 之间无限递归。
+    if (this.idCache.has(normalized)) return this.idCache.get(normalized) || "";
     const parent = parentPath(normalized);
     const items = await this.list(parent);
     const it = items.find((i) => normalizePath(i.path) === normalized);
