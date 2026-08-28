@@ -55,7 +55,7 @@ export class PikPakShareDriver extends CloudBase {
       meta: { client_version: this.client.version, package_name: this.client.pkg, user_id: userId, timestamp: ts, captcha_sign: sign },
       redirect_uri: "xlaccsdk01://xbase.cloud/callback?state=harbor",
     };
-    const r = await fetch(`${API_USER}/shield/captcha/init?client_id=${this.client.id}`, {
+    const r = await fetch(`${API_USER}/shield/captcha/init`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
